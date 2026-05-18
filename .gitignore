@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+dist/
+build/
+.env
+.venv
+*.egg-info
+*.xlsx
+*example*.xlsx
+__pycache__/
