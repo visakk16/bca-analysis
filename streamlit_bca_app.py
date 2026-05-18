@@ -11,8 +11,8 @@ st.set_page_config(page_title='BCA Plate Analysis', layout='wide')
 def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: list = None, exclude_option: str = 'none'):
     df = pd.read_excel(absorbance_path, header=None)
 
-    # Defaults (8-point standard series commonly used)
-    conc_list = [2000, 1500, 1000, 750, 500, 250, 125, 25]
+    # Defaults (9-point standard series including zero)
+    conc_list = [2000, 1500, 1000, 750, 500, 250, 125, 25, 0]
     sample_names = []
     dilution_factor = 8.0
     loading_protein = 30.0
@@ -83,8 +83,35 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
     try:
         std_block = df.iloc[base: base + n_stds, std_cols]
         standards = std_block.mean(axis=1).values
+        # If we read fewer rows than expected (e.g. only 8 from B&C) try to append D&E at base row as the 9th
+        if len(standards) < n_stds and df.shape[1] > 4:
+            try:
+                de_val = df.iloc[base, [3, 4]].mean()
+                if not np.isnan(de_val):
+                    standards = np.concatenate([standards, [de_val]])
+            except Exception:
+                pass
+        # If any of the standards are NaN (e.g. missing in B/C), try to fill per-row from D&E
+        nan_idx = np.where(np.isnan(standards))[0]
+        if nan_idx.size > 0 and df.shape[1] > 4:
+            for idx in nan_idx:
+                row = base + int(idx)
+                try:
+                    de_vals = df.iloc[row, [3, 4]].values
+                    # convert to numeric where possible
+                    de_numeric = pd.to_numeric(pd.Series(de_vals), errors='coerce')
+                    if not de_numeric.dropna().empty:
+                        standards[idx] = float(de_numeric.mean())
+                except Exception:
+                    pass
     except Exception as e:
         raise ValueError(f'Failed reading standard block: {e}')
+
+    # After attempting to fill missing values, ensure we have all standards
+    if len(standards) != n_stds or np.isnan(standards).any():
+        # give a helpful error listing which indices are missing
+        missing = [i for i, v in enumerate(standards) if (v is None or (isinstance(v, float) and np.isnan(v)))]
+        raise ValueError(f'Expected {n_stds} standards, got {len([s for s in standards if not (isinstance(s,float) and np.isnan(s))])}. Missing indices: {missing}. Check the absorbance and config files and the chosen standard columns.')
 
     # Basic validation: ensure we read exactly the number of standards we expect
     if len(standards) != len(conc_list) or np.isnan(standards).any():
@@ -123,15 +150,23 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
     used_conc = conc_sorted
     used_std = std_sorted
     if exclude_option != 'none':
+        # Build a boolean mask over the sorted arrays and exclude by index (lowest/highest)
         mask = np.ones_like(conc_sorted, dtype=bool)
+        # conc_sorted is sorted ascending; index 0 is the lowest, index -1 the highest
         if exclude_option in ('exclude_0', 'exclude_both'):
-            mask = mask & (conc_sorted != 0)
+            if mask.size > 0:
+                mask[0] = False
         if exclude_option in ('exclude_2000', 'exclude_both'):
-            mask = mask & (conc_sorted != max(conc_sorted))
+            if mask.size > 0:
+                mask[-1] = False
         used_conc = conc_sorted[mask]
         used_std = std_sorted[mask]
 
     # Compute linear fit with numpy.polyfit for robustness and calculate R^2 explicitly
+    # Need at least 2 points to fit
+    if used_conc.size < 2:
+        raise ValueError('Not enough standards remaining after exclusion to perform a linear fit (need at least 2).')
+
     coeffs = np.polyfit(used_conc, used_std, 1)
     slope = float(coeffs[0])
     intercept = float(coeffs[1])
@@ -144,19 +179,25 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
     plot_conc = used_conc
     plot_std = used_std
 
-    # Create figure using sorted data
+    # Create figure using the used (possibly filtered) data so plot matches the fit
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(conc_sorted, std_sorted, color='blue', label='Standards')
-    x_line = np.linspace(min(conc_sorted), max(conc_sorted), 100)
+    ax.scatter(used_conc, used_std, color='blue', label='Standards')
+    # Plot regression line across the used-concentration range
+    x_min = float(np.min(used_conc))
+    x_max = float(np.max(used_conc))
+    x_line = np.linspace(x_min, x_max, 100)
     y_line = slope * x_line + intercept
     ax.plot(x_line, y_line, '--r', label=f'y = {slope:.6f}x + {intercept:.6f}\nR² = {r_squared:.4f}')
     # Annotate each plotted standard point with its concentration for clarity
-    for xc, yc in zip(plot_conc, plot_std):
+    for xc, yc in zip(used_conc, used_std):
         try:
             lbl = f"{int(xc)}"
         except Exception:
             lbl = str(xc)
         ax.annotate(lbl, (xc, yc), textcoords='offset points', xytext=(4, 4), fontsize=8, color='black')
+    # Ensure axes reflect the used range (small padding)
+    x_padding = max(1.0, (x_max - x_min) * 0.03)
+    ax.set_xlim(x_min - x_padding, x_max + x_padding)
     ax.set_xlabel('Concentration (µg/ml)')
     ax.set_ylabel('Absorbance')
     ax.set_title('BCA Standard Curve')
@@ -231,21 +272,9 @@ st.write('Upload an absorbance Excel file and a config Excel (optional).')
 abs_upl = st.file_uploader('Absorbance Excel file (.xlsx)', type=['xlsx'])
 cfg_upl = st.file_uploader('Config Excel file (.xlsx) (optional)', type=['xlsx'])
 
-# Allow user to choose which columns to average for standards
-std_choice = st.selectbox('Standards replicate columns to use',
-                         ('B & C (default)', 'C only', 'B, C & D (triplicate)'))
-
-# Allow user to optionally exclude endpoint standards when fitting
+# Standard columns are fixed to B & C (indices 1 and 2) and always averaged
 exclude_option = st.selectbox('Exclude endpoints from fit', ('none', 'exclude_0', 'exclude_2000', 'exclude_both'))
-
-def std_choice_to_cols(choice):
-    if choice == 'B & C (default)':
-        return [1, 2]
-    if choice == 'C only':
-        return [2]
-    if choice == 'B, C & D (triplicate)':
-        return [1, 2, 3]
-    return [1, 2]
+std_cols = [1, 2]
 
 if st.button('Run analysis'):
     if not abs_upl:
@@ -263,8 +292,7 @@ if st.button('Run analysis'):
             cfg_path = abs_path  # pass same file so defaults apply
 
         try:
-            cols = std_choice_to_cols(std_choice)
-            results_df, stats_out, fig = analyze_bca_plate_stream(abs_path, cfg_path, std_cols=cols, exclude_option=exclude_option)
+            results_df, stats_out, fig = analyze_bca_plate_stream(abs_path, cfg_path, std_cols=std_cols, exclude_option=exclude_option)
             # store results in session state so UI controls outside the button can interact
             st.session_state['results_df'] = results_df
             st.session_state['stats_out'] = stats_out
