@@ -8,11 +8,11 @@ import tempfile
 st.set_page_config(page_title='BCA Plate Analysis', layout='wide')
 
 # Reimplemented minimal version of the core analysis without interactive plt.show()
-def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: list = None):
+def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: list = None, exclude_option: str = 'none'):
     df = pd.read_excel(absorbance_path, header=None)
 
-    # Defaults
-    conc_list = [2000, 1750, 1500, 1250, 1000, 750, 500, 250, 0]
+    # Defaults (8-point standard series commonly used)
+    conc_list = [2000, 1500, 1000, 750, 500, 250, 125, 25]
     sample_names = []
     dilution_factor = 8.0
     loading_protein = 30.0
@@ -75,28 +75,22 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
     # Determine which columns to use for standards (default B & C -> indices 1 and 2)
     if std_cols is None:
         std_cols = [1, 2]
-    # Read candidate BC standards and DE cell using base
-    standards_BC = df.iloc[base:base+8, std_cols].mean(axis=1).values
-    standard_DE = df.iloc[base, [3, 4]].mean()
 
-    # Heuristic: if standard_DE looks like a numeric header (large integer) while BC values are small,
-    # then assume base was wrong and shift base by +1
+    # Read exactly as many standard rows as concentrations specified in conc_list.
+    # This avoids the fragile "9th standard" hack and ensures the code matches the plate layout.
+    n_stds = len(conc_list)
+    # Read the block of rows starting at `base` for n_stds rows and the chosen std_cols
     try:
-        avg_bc = np.nanmean(standards_BC)
-        if (standard_DE > 1.0 and avg_bc < 1.0 and abs(round(standard_DE) - standard_DE) < 0.01):
-            base = base + 1
-            standards_BC = df.iloc[base:base+8, [1, 2]].mean(axis=1).values
-            standard_DE = df.iloc[base, [3, 4]].mean()
-    except Exception:
-        pass
+        std_block = df.iloc[base: base + n_stds, std_cols]
+        standards = std_block.mean(axis=1).values
+    except Exception as e:
+        raise ValueError(f'Failed reading standard block: {e}')
 
-    standards = np.concatenate([standards_BC, [standard_DE]])
-
-    # Basic validation
+    # Basic validation: ensure we read exactly the number of standards we expect
     if len(standards) != len(conc_list) or np.isnan(standards).any():
-        raise ValueError('Standards length mismatch or NaNs detected. Check the absorbance and config files.')
+        raise ValueError(f'Expected {len(conc_list)} standards, got {len(standards)}. Check the absorbance and config files and the chosen standard columns.')
 
-        # Ensure concentration and standards are paired correctly
+    # Ensure concentration and standards are paired correctly
     conc_arr = np.array(conc_list, dtype=float)
     std_arr = np.array(standards, dtype=float)
     if conc_arr.shape != std_arr.shape:
@@ -125,18 +119,30 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
     conc_sorted = conc_arr[order]
     std_sorted = std_arr[order]
 
+    # Optionally exclude end-point standards: 'none', 'exclude_0', 'exclude_2000', 'exclude_both'
+    used_conc = conc_sorted
+    used_std = std_sorted
+    if exclude_option != 'none':
+        mask = np.ones_like(conc_sorted, dtype=bool)
+        if exclude_option in ('exclude_0', 'exclude_both'):
+            mask = mask & (conc_sorted != 0)
+        if exclude_option in ('exclude_2000', 'exclude_both'):
+            mask = mask & (conc_sorted != max(conc_sorted))
+        used_conc = conc_sorted[mask]
+        used_std = std_sorted[mask]
+
     # Compute linear fit with numpy.polyfit for robustness and calculate R^2 explicitly
-    coeffs = np.polyfit(conc_sorted, std_sorted, 1)
+    coeffs = np.polyfit(used_conc, used_std, 1)
     slope = float(coeffs[0])
     intercept = float(coeffs[1])
-    preds_full = slope * conc_sorted + intercept
-    ss_res = np.sum((std_sorted - preds_full) ** 2)
-    ss_tot = np.sum((std_sorted - np.mean(std_sorted)) ** 2)
+    preds_full = slope * used_conc + intercept
+    ss_res = np.sum((used_std - preds_full) ** 2)
+    ss_tot = np.sum((used_std - np.mean(used_std)) ** 2)
     r_squared = float(1.0 - ss_res / ss_tot) if ss_tot != 0 else 0.0
 
     # default arrays used for plotting (can be changed later if filtering applied)
-    plot_conc = conc_sorted
-    plot_std = std_sorted
+    plot_conc = used_conc
+    plot_std = used_std
 
     # Create figure using sorted data
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -212,6 +218,8 @@ def analyze_bca_plate_stream(absorbance_path: str, config_path: str, std_cols: l
         'r_squared': r_squared,
         'conc_sorted': conc_sorted.tolist(),
         'std_sorted': std_sorted.tolist(),
+        'used_conc': used_conc.tolist(),
+        'used_std': used_std.tolist(),
         'plot_conc': plot_conc.tolist(),
         'plot_std': plot_std.tolist(),
     }
@@ -226,6 +234,9 @@ cfg_upl = st.file_uploader('Config Excel file (.xlsx) (optional)', type=['xlsx']
 # Allow user to choose which columns to average for standards
 std_choice = st.selectbox('Standards replicate columns to use',
                          ('B & C (default)', 'C only', 'B, C & D (triplicate)'))
+
+# Allow user to optionally exclude endpoint standards when fitting
+exclude_option = st.selectbox('Exclude endpoints from fit', ('none', 'exclude_0', 'exclude_2000', 'exclude_both'))
 
 def std_choice_to_cols(choice):
     if choice == 'B & C (default)':
@@ -253,7 +264,7 @@ if st.button('Run analysis'):
 
         try:
             cols = std_choice_to_cols(std_choice)
-            results_df, stats_out, fig = analyze_bca_plate_stream(abs_path, cfg_path, std_cols=cols)
+            results_df, stats_out, fig = analyze_bca_plate_stream(abs_path, cfg_path, std_cols=cols, exclude_option=exclude_option)
             # store results in session state so UI controls outside the button can interact
             st.session_state['results_df'] = results_df
             st.session_state['stats_out'] = stats_out
@@ -281,6 +292,11 @@ if 'results_df' in st.session_state:
         st.write(stats_out.get('conc_sorted'))
         st.write('Absorbances used (sorted):')
         st.write(stats_out.get('std_sorted'))
+        st.write('Points actually used for fitting (after exclude filter):')
+        st.write('Concentrations used for fit:')
+        st.write(stats_out.get('used_conc'))
+        st.write('Absorbances used for fit:')
+        st.write(stats_out.get('used_std'))
         # Show the raw DataFrame and the exact cells used for standards
         try:
             raw_df = pd.read_excel(st.session_state['abs_path'], header=None)
@@ -292,3 +308,14 @@ if 'results_df' in st.session_state:
             st.dataframe(pd.DataFrame([raw_df.iloc[0, [3, 4]]]))
         except Exception as e:
             st.write('Could not read raw file for debug display:', e)
+
+    # Allow downloading the exact standard points used for the regression
+    try:
+        std_df = pd.DataFrame({
+            'Concentration_used_for_fit': stats_out.get('used_conc'),
+            'Absorbance_used_for_fit': stats_out.get('used_std')
+        })
+        csv_std = std_df.to_csv(index=False).encode('utf-8')
+        st.download_button('Download standards used for fit (CSV)', csv_std, file_name='standards_for_fit.csv', mime='text/csv')
+    except Exception:
+        pass
