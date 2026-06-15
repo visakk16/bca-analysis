@@ -73,29 +73,6 @@ After running, the program will:
 
 ---
 
-## Example Config File Format
-**Columns:**
-- `Parameter` — possible values: `dilution_factor`, `loading_protein`, `loading_volume`
-- `Value` — numeric value for that parameter  
-- `Standard Concentration (µg/ml)` — optional list of known standards  
-- `Sample Names` — optional list of sample names
-
-Example:
-
-| Parameter         | Value | Standard Concentration (µg/ml) | Sample Names   |
-|-------------------|--------|-------------------------------|----------------|
-| dilution_factor   | 8      | 2000                          | Sample 1       |
-| loading_protein   | 30     | 1750                          | Sample 2       |
-| loading_volume    | 40     | 1500                          | Sample 3       |
-|                   |        | 1250                          | Sample 4       |
-|                   |        | 1000                          | Sample 5       |
-|                   |        | 750                           | Sample 6       |
-|                   |        | 500                           | Sample 7       |
-|                   |        | 250                           | Sample 8       |
-|                   |        | 0                             | Sample 9       |
-
----
-
 ## Output Example
 
 After running, you’ll see:
@@ -114,7 +91,7 @@ R² = 0.9987
 
 ---
 
-## 🧠 Author
+## Author
 **Visak Kumar**  
 Created to streamline analysis of BCA protein assays using Python.
 
