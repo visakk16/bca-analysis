@@ -5,7 +5,7 @@ It reads plate reader absorbance data and an optional configuration file, calcul
 
 ---
 
-## 🚀 Features
+## Features
 - Reads raw plate reader absorbance data (`.xlsx`)
 - Reads optional configuration file for:
   - Standard concentrations
@@ -21,7 +21,7 @@ It reads plate reader absorbance data and an optional configuration file, calcul
 
 ---
 
-## 🧰 Requirements
+## Requirements
 - Python 3.9+
 - Required packages (see `requirements.txt`):
   ```
@@ -39,7 +39,7 @@ pip install -r requirements.txt
 
 ---
 
-## 📂 File Structure
+## File Structure
 ```
 bca_analysis/
 │
@@ -54,7 +54,7 @@ bca_analysis/
 
 ---
 
-## 🧪 Example Usage
+## Example Usage
 
 ```bash
 python analyze_bca_plate.py
@@ -73,7 +73,7 @@ After running, the program will:
 
 ---
 
-## 🧬 Example Config File Format
+## Example Config File Format
 **Columns:**
 - `Parameter` — possible values: `dilution_factor`, `loading_protein`, `loading_volume`
 - `Value` — numeric value for that parameter  
@@ -96,7 +96,7 @@ Example:
 
 ---
 
-## 📊 Output Example
+## Output Example
 
 After running, you’ll see:
 
