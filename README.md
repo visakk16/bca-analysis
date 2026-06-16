@@ -1,3 +1,39 @@
+# BCA Analysis Streamlit App
+
+Quick steps to run the Streamlit app and fix editor import warnings (Pylance).
+
+1) Create a Python virtual environment (zsh):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+2) Run the Streamlit app (from this directory):
+
+```bash
+streamlit run streamlit_bca_app.py
+```
+
+3) Fix VS Code Pylance "could not be resolved" errors:
+
+- In VS Code, open the Command Palette (Cmd+Shift+P) -> "Python: Select Interpreter" -> pick the `.venv` interpreter from this project.
+- Restart VS Code window or reload the Python extension. Pylance will then point to the installed site-packages.
+
+4) Example inputs
+
+If you need sample files, run the helper one level up:
+
+```bash
+python ../generate_example_inputs.py
+```
+
+Troubleshooting:
+
+- If Streamlit says a package is missing on run, ensure the venv is activated in the terminal you launched Streamlit from.
+- If you still see Pylance errors after selecting the interpreter, open the workspace settings and set "python.analysis.extraPaths" to ["./.venv/lib/pythonX.Y/site-packages"] (use your actual python version path).
 # Automatic BCA Plate Analyzer
 
 This project automates the analysis of BCA protein assay data directly from Excel files.  
