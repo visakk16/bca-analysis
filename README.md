@@ -1,121 +1,53 @@
-# Automatic BCA Plate Analyzer
+# BCA Plate Analyzer
 
-This project automates the analysis of BCA protein assay data directly from Excel files.  
-It reads plate reader absorbance data and an optional configuration file, calculates the standard curve, and outputs a results table and regression plot.
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://bca-analysis-vk.streamlit.app/)
 
----
+A web app for automated BCA protein assay analysis directly from plate reader output.
+No installation required — runs in the browser.
 
-## Features
-- Reads raw plate reader absorbance data (`.xlsx`)
-- Reads optional configuration file for:
-  - Standard concentrations
-  - Sample names
-  - Parameters (dilution factor, loading protein, loading volume)
-- Automatically performs:
-  - Linear regression for standard curve
-  - R² and regression equation display
-  - Sample concentration calculations
-  - Volume calculations for loading and buffer
-- Plots the standard curve
-- Outputs a complete results DataFrame
+## Usage
 
----
+1. Open the app: [bca-analysis-vk.streamlit.app](https://bca-analysis-vk.streamlit.app/)
+2. Upload your absorbance Excel file (`.xlsx`) exported from your plate reader
+3. Set your parameters:
+   - **Dilution factor** — how much your samples were diluted before the assay
+   - **Total loading volume (µl)** — sum of sample + buffer per lane
+   - **Target protein to load (µg)** — the app back-calculates the sample volume needed
+   - **Sample names** — paste one per line to label your samples (optional)
+4. Click **Run analysis**
+5. Download the results as a CSV
 
-## Requirements
-- Python 3.9+
-- Required packages (see `requirements.txt`):
-  ```
-  pandas
-  numpy
-  matplotlib
-  scipy
-  openpyxl
-  ```
+## What it does
 
-Install with:
-```bash
-pip install -r requirements.txt
-```
+- Reads a 96-well plate layout from your `.xlsx` file
+- Fits a linear standard curve to the BCA standards (columns B & C)
+- Calculates protein concentration for each sample with dilution correction
+- Computes sample and buffer volumes needed to load your target protein amount
+- Displays R², slope, intercept, and the standard curve plot
 
----
+## Expected plate layout
 
-## File Structure
-```
-bca_analysis/
-│
-├── analyze_bca_plate.py        # Main script
-├── example_data/
-│   ├── example_absorbance.xlsx
-│   └── example_config.xlsx
-├── README.md
-├── requirements.txt
-└── .gitignore
-```
+| Column | Contents |
+|--------|----------|
+| B–C | Standards (rows A–H), 9-point series including blank |
+| D–E | Sample set 1 (duplicates) |
+| F–G | Sample set 2 (duplicates) |
+| H–I | Sample set 3 (duplicates) |
+| J–K | Sample set 4 (duplicates) |
 
----
+## Output columns
 
-## Example Usage
-
-```bash
-python analyze_bca_plate.py
-```
-
-You can update the paths inside the script:
-```python
-absorbance_file = '/Users/visakkumar/Downloads/20251021_BCA_L1RIME_NC.xlsx'
-config_file = '/Users/visakkumar/Downloads/bca_config.xlsx'
-```
-
-After running, the program will:
-1. Print the regression equation and R².
-2. Display the standard curve.
-3. Print the full concentration results table.
-
----
-
-## Example Config File Format
-**Columns:**
-- `Parameter` — possible values: `dilution_factor`, `loading_protein`, `loading_volume`
-- `Value` — numeric value for that parameter  
-- `Standard Concentration (µg/ml)` — optional list of known standards  
-- `Sample Names` — optional list of sample names
-
-Example:
-
-| Parameter         | Value | Standard Concentration (µg/ml) | Sample Names   |
-|-------------------|--------|-------------------------------|----------------|
-| dilution_factor   | 8      | 2000                          | Sample 1       |
-| loading_protein   | 30     | 1750                          | Sample 2       |
-| loading_volume    | 40     | 1500                          | Sample 3       |
-|                   |        | 1250                          | Sample 4       |
-|                   |        | 1000                          | Sample 5       |
-|                   |        | 750                           | Sample 6       |
-|                   |        | 500                           | Sample 7       |
-|                   |        | 250                           | Sample 8       |
-|                   |        | 0                             | Sample 9       |
-
----
-
-## Output Example
-
-After running, you’ll see:
-
-```
-Configuration Parameters:
-Dilution Factor: 8.0
-Loading Protein (µg): 30.0
-Loading Volume (µl): 40.0
-
-Concentration (µg/ml) = (absorbance - intercept) / slope
-R² = 0.9987
-```
-
-…and a plotted standard curve followed by a DataFrame of results.
-
----
+| Column | Description |
+|--------|-------------|
+| Sample | Sample name or well ID |
+| Absorbance | Mean absorbance of duplicates |
+| Concentration (µg/ml) | From standard curve (undiluted) |
+| µg/ml (with dilution) | After applying dilution factor |
+| µg/µl | Converted for volume calculation |
+| Sample Volume (µl) | Volume needed to hit target protein |
+| 2X Sample Volume (µl) | For 2X loading buffer prep |
+| Buffer Volume (µl) | Volume of loading buffer to add |
 
 ## Author
-**Visak Kumar**  
-Created to streamline analysis of BCA protein assays using Python.
 
----
+Visak Kumar
