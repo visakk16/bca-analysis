@@ -279,7 +279,6 @@ def analyze_bca_plate_stream(
                 'Concentration (µg/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
                 'µg/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
                 'µg/µl': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
-                target_label: round(float(target_ug), 3),
                 'Sample Volume (µl)': round(float(sample_vol), 2),
                 'Buffer Volume (µl)': round(float(buffer_vol), 2),
                 f'{mx_label} Sample Volume (µl)': round(float(vol_nx), 2),
