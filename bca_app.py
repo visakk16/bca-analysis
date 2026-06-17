@@ -18,6 +18,7 @@ def analyze_bca_plate_stream(
     round_digits: int = 6,
     target_ug_override: float = None,
     sample_names_override: list = None,
+    multiplier: float = 2.0,
 ):
     df = pd.read_excel(absorbance_path, header=None)
 
@@ -253,7 +254,12 @@ def analyze_bca_plate_stream(
 
             sample_vol = min(sample_vol, float(loading_volume))
             buffer_vol = max(0.0, float(loading_volume) - sample_vol)
-            vol_2x = 2.0 * sample_vol
+            vol_nx = multiplier * sample_vol
+            buffer_vol_nx = multiplier * buffer_vol
+            try:
+                mx_label = f"{int(multiplier)}X" if float(multiplier).is_integer() else f"{multiplier}X"
+            except Exception:
+                mx_label = 'NX'
 
             # Resolve sample name
             if sample_names_override and sample_index < len(sample_names_override):
@@ -276,8 +282,8 @@ def analyze_bca_plate_stream(
                 target_label: round(float(target_ug), 3),
                 'Sample Volume (µl)': round(float(sample_vol), 2),
                 'Buffer Volume (µl)': round(float(buffer_vol), 2),
-                '2X Sample Volume (µl)': round(float(vol_2x), 2),
-                '2X Buffer Volume (µl)': round(float(buffer_vol * 2.0), 2),
+                f'{mx_label} Sample Volume (µl)': round(float(vol_nx), 2),
+                f'{mx_label} Buffer Volume (µl)': round(float(buffer_vol_nx), 2),
             })
             sample_index += 1
 
@@ -339,6 +345,12 @@ st.write(
 target_ug_input = st.number_input('Target protein to load (µg):', min_value=0.1, value=20.0, step=0.1)
 
 st.write(
+    'Optional: enter a multiplier for the scaled sample and buffer volume columns '
+    '(e.g. 2 for 2X, 3 for 3X, 4 for 4X).'
+)
+multiplier_input = st.number_input('Volume multiplier:', min_value=1.0, value=2.0, step=1.0)
+
+st.write(
     'Optional: paste sample names (one per line) to label samples instead of default well names. '
     'Leave a line blank to skip that position.'
 )
@@ -371,12 +383,14 @@ if st.button('Run analysis'):
                 round_digits=round_digits,
                 target_ug_override=target_ug_input,
                 sample_names_override=sample_names_list,
+                multiplier=multiplier_input,
             )
             st.session_state['results_df'] = results_df
             st.session_state['stats_out'] = stats_out
             st.session_state['fig'] = fig
             st.session_state['abs_path'] = abs_path
             st.session_state['round_digits'] = round_digits
+            st.session_state['multiplier'] = multiplier_input
         except Exception as e:
             st.error(f'Analysis failed: {e}')
 
