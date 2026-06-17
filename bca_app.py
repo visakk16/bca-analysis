@@ -284,6 +284,7 @@ def analyze_bca_plate_stream(
                 'Buffer Volume (µl)': round(float(buffer_vol), 2),
                 f'{mx_label} Sample Volume (µl)': round(float(vol_nx), 2),
                 f'{mx_label} Buffer Volume (µl)': round(float(buffer_vol_nx), 2),
+                '6X SDS Loading Dye (µl)': round(float(loading_volume) / 5.0, 2),
             })
             sample_index += 1
 
