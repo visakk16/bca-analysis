@@ -22,19 +22,19 @@ def analyze_bca_plate_stream(
 ):
     df = pd.read_excel(absorbance_path, header=None)
 
-    # --- Defaults (9-point standard series including zero) ---
+    # --- Defaults ---
     conc_list = [2000, 1500, 1000, 750, 500, 250, 125, 25, 0]
     sample_names = []
     dilution_factor = 8.0
     loading_protein = 30.0
-    loading_volume = 40.0
+    loading_volume = None  # None = not provided by user
 
     # --- Optional config file ---
     if config_path:
         try:
             config_df = pd.read_excel(config_path)
-            if 'Standard Concentration (µg/ml)' in config_df.columns:
-                temp_conc = config_df['Standard Concentration (µg/ml)'].dropna().tolist()
+            if 'Standard Concentration (\u00b5g/ml)' in config_df.columns:
+                temp_conc = config_df['Standard Concentration (\u00b5g/ml)'].dropna().tolist()
                 if temp_conc:
                     conc_list = temp_conc
             if 'Sample Names' in config_df.columns:
@@ -53,22 +53,25 @@ def analyze_bca_plate_stream(
                     elif row['Parameter'] == 'loading_volume':
                         loading_volume = float(row['Value'])
         except Exception:
-            pass  # keep defaults if config fails
+            pass
 
-    # --- UI overrides take precedence ---
+    # --- UI overrides ---
     if dilution_override is not None:
         try:
             dilution_factor = float(dilution_override)
         except Exception:
             pass
 
+    # None means user chose not to provide a loading volume
     if total_volume_override is not None:
         try:
             loading_volume = float(total_volume_override)
         except Exception:
             pass
 
-    # --- Detect whether the first row is a numeric column-header row ---
+    has_loading_volume = loading_volume is not None
+
+    # --- Detect numeric header row ---
     header_like = False
     try:
         first_row_vals = df.iloc[0, 1:20].values.tolist()
@@ -90,7 +93,6 @@ def analyze_bca_plate_stream(
 
     base = 1 if header_like else 0
 
-    # --- Standard columns default to B & C (indices 1 and 2) ---
     if std_cols is None:
         std_cols = [1, 2]
 
@@ -118,7 +120,6 @@ def analyze_bca_plate_stream(
             physical_std_count = std_block.dropna(how='all').shape[0]
             standards = std_block.mean(axis=1).values
 
-        # Fill any NaN standards from D&E columns
         nan_idx = np.where(np.isnan(standards))[0]
         if nan_idx.size > 0 and df.shape[1] > 4:
             for idx in nan_idx:
@@ -134,7 +135,6 @@ def analyze_bca_plate_stream(
     except Exception as e:
         raise ValueError(f'Failed reading standard block: {e}')
 
-    # --- Validate standards ---
     if len(standards) != n_stds or np.isnan(standards).any():
         missing = [i for i, v in enumerate(standards) if np.isnan(v)]
         raise ValueError(
@@ -146,12 +146,10 @@ def analyze_bca_plate_stream(
     conc_arr = np.array(conc_list, dtype=float)
     std_arr = np.array(standards, dtype=float)
 
-    # --- Sort by concentration ---
     order = np.argsort(conc_arr)
     conc_sorted = conc_arr[order]
     std_sorted = std_arr[order]
 
-    # --- Exclude endpoints if requested ---
     used_conc = conc_sorted.copy()
     used_std = std_sorted.copy()
     if exclude_option != 'none':
@@ -164,9 +162,7 @@ def analyze_bca_plate_stream(
         used_std = std_sorted[mask]
 
     if used_conc.size < 2:
-        raise ValueError(
-            'Not enough standards remaining after exclusion to fit a line (need ≥ 2).'
-        )
+        raise ValueError('Not enough standards remaining after exclusion to fit a line (need >= 2).')
 
     # --- Linear regression ---
     coeffs = np.polyfit(used_conc, used_std, 1)
@@ -189,7 +185,7 @@ def analyze_bca_plate_stream(
     y_line = slope_rounded * x_line + intercept_rounded
     ax.plot(
         x_line, y_line, '--r',
-        label=f'y = {slope_rounded:.{rd}f}x + {intercept_rounded:.{rd}f}\nR² = {r_squared:.4f}'
+        label=f'y = {slope_rounded:.{rd}f}x + {intercept_rounded:.{rd}f}\nR2 = {r_squared:.4f}'
     )
     for xc, yc in zip(used_conc, used_std):
         ax.annotate(
@@ -198,7 +194,7 @@ def analyze_bca_plate_stream(
         )
     x_padding = max(1.0, (float(np.max(used_conc)) - float(np.min(used_conc))) * 0.03)
     ax.set_xlim(float(np.min(used_conc)) - x_padding, float(np.max(used_conc)) + x_padding)
-    ax.set_xlabel('Concentration (µg/ml)')
+    ax.set_xlabel('Concentration (ug/ml)')
     ax.set_ylabel('Absorbance')
     ax.set_title('BCA Standard Curve')
     ax.legend()
@@ -215,6 +211,12 @@ def analyze_bca_plate_stream(
             idx0 = idx0 // 26 - 1
         return letters
 
+    # --- Multiplier label ---
+    try:
+        mx_label = f"{int(multiplier)}X" if float(multiplier).is_integer() else f"{multiplier}X"
+    except Exception:
+        mx_label = 'NX'
+
     # --- Read samples ---
     sample_start = base + 1
     sample_col_pairs = [(3, 4), (5, 6), (7, 8), (9, 10)]
@@ -223,10 +225,6 @@ def analyze_bca_plate_stream(
     names_provided = bool(sample_names_override)
 
     target_ug = loading_protein if target_ug_override is None else float(target_ug_override)
-    try:
-        target_label = f"{int(target_ug) if float(target_ug).is_integer() else target_ug} µg"
-    except Exception:
-        target_label = f"{float(loading_protein)} µg"
 
     for c1, c2 in sample_col_pairs:
         if names_provided and sample_index >= len(sample_names_override):
@@ -247,19 +245,46 @@ def analyze_bca_plate_stream(
             conc_with_dilution = conc * dilution_factor
             ug_per_ul = conc_with_dilution / 1000.0
 
+            # Sample volume needed to reach target_ug
             if not np.isnan(ug_per_ul) and ug_per_ul > 0:
                 sample_vol = float(target_ug) / ug_per_ul
             else:
-                sample_vol = float(loading_volume)
+                sample_vol = float('nan')
 
-            sample_vol = min(sample_vol, float(loading_volume))
-            buffer_vol = max(0.0, float(loading_volume) - sample_vol)
-            vol_nx = multiplier * sample_vol
-            buffer_vol_nx = multiplier * buffer_vol
-            try:
-                mx_label = f"{int(multiplier)}X" if float(multiplier).is_integer() else f"{multiplier}X"
-            except Exception:
-                mx_label = 'NX'
+            # Build row — columns that need loading volume get N/A if not provided
+            if has_loading_volume:
+                lv = float(loading_volume)
+                sv = min(sample_vol, lv) if not np.isnan(sample_vol) else lv
+                buffer_vol = max(0.0, lv - sv)
+                vol_nx = multiplier * sv
+                buffer_vol_nx = multiplier * buffer_vol
+                sds_dye = lv / 5.0
+                row = {
+                    'Sample': None,
+                    'Absorbance': round(abs_mean, 3),
+                    'Concentration (ug/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
+                    'ug/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
+                    'ug/ul': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
+                    'Sample Volume (ul)': round(sv, 2),
+                    f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
+                    'Buffer Volume (ul)': round(buffer_vol, 2),
+                    f'{mx_label} Buffer Volume (ul)': round(buffer_vol_nx, 2),
+                    '6X SDS Loading Dye (ul)': round(sds_dye, 2),
+                }
+            else:
+                sv_display = round(sample_vol, 2) if not np.isnan(sample_vol) else float('nan')
+                row = {
+                    'Sample': None,
+                    'Absorbance': round(abs_mean, 3),
+                    'Concentration (ug/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
+                    'ug/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
+                    'ug/ul': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
+                    'Sample Volume (ul)': sv_display,
+                    f'{mx_label} Sample Volume (ul)': 'N/A',
+                    'Buffer Volume (ul)': 'N/A',
+                    f'{mx_label} Buffer Volume (ul)': 'N/A',
+                    '6X SDS Loading Dye (ul)': 'N/A',
+                }
 
             # Resolve sample name
             if sample_names_override and sample_index < len(sample_names_override):
@@ -273,23 +298,14 @@ def analyze_bca_plate_stream(
             else:
                 sample_name = f"{col_letter(c1)}{int(row_idx) + 1}"
 
-            results.append({
-                'Sample': sample_name,
-                'Absorbance': round(abs_mean, 3),
-                'Concentration (µg/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
-                'µg/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
-                'µg/µl': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
-                'Sample Volume (µl)': round(float(sample_vol), 2),
-                'Buffer Volume (µl)': round(float(buffer_vol), 2),
-                f'{mx_label} Sample Volume (µl)': round(float(vol_nx), 2),
-                f'{mx_label} Buffer Volume (µl)': round(float(buffer_vol_nx), 2),
-                '6X SDS Loading Dye (µl)': round(float(loading_volume) / 5.0, 2),
-            })
+            row['Sample'] = sample_name
+            results.append(row)
             sample_index += 1
 
     results_df = pd.DataFrame(results)
+    cols = ['Sample'] + [c for c in results_df.columns if c != 'Sample']
+    results_df = results_df[cols]
 
-    # Filter to only provided non-empty names
     if sample_names_override:
         provided_nonempty = [s.strip() for s in sample_names_override if s and s.strip()]
         if provided_nonempty:
@@ -307,7 +323,7 @@ def analyze_bca_plate_stream(
         'used_std': used_std.tolist(),
         'physical_std_count': int(physical_std_count),
         'base': int(base),
-        'total_volume': float(loading_volume),
+        'total_volume': float(loading_volume) if has_loading_volume else None,
         'loading_protein': float(loading_protein),
     }
 
@@ -325,12 +341,6 @@ st.write('Optional: enter dilution factor if your samples were diluted (e.g., 5 
 dilution_input = st.number_input('Dilution Factor:', min_value=1.0, value=5.0, step=1.0)
 
 st.write(
-    'Optional: enter total loading volume (µl). '
-    'Sample volume is computed to deliver the target protein amount; buffer fills the remainder.'
-)
-total_volume_input = st.number_input('Total loading volume (µl):', min_value=1.0, value=40.0, step=1.0)
-
-st.write(
     'Optional: choose decimal places to round slope and intercept '
     '(these rounded values are used to compute concentrations).'
 )
@@ -339,10 +349,27 @@ round_digits = st.number_input(
 )
 
 st.write(
-    'Optional: enter target protein mass to load (µg). '
+    'Enter target protein mass (ug). '
     'This is divided by the sample concentration to compute the required sample volume.'
 )
-target_ug_input = st.number_input('Target protein to load (µg):', min_value=0.1, value=20.0, step=0.1)
+target_ug_input = st.number_input('Target protein to load (ug):', min_value=0.1, value=20.0, step=0.1)
+
+use_loading_volume = st.checkbox(
+    'I have a total loading volume (required for buffer, scaled volume, and SDS dye columns)',
+    value=True
+)
+
+if use_loading_volume:
+    st.write(
+        'Enter total loading volume (ul) — the sum of sample + buffer per lane.'
+    )
+    total_volume_input = st.number_input('Total loading volume (ul):', min_value=1.0, value=40.0, step=1.0)
+else:
+    total_volume_input = None
+    st.info(
+        'No loading volume — only Sample Volume will be calculated. '
+        'Buffer, scaled, and SDS dye columns will show N/A.'
+    )
 
 st.write(
     'Optional: enter a multiplier for the scaled sample and buffer volume columns '
@@ -362,7 +389,7 @@ exclude_option = st.selectbox(
     ('none', 'exclude_0', 'exclude_2000', 'exclude_both')
 )
 
-std_cols = [1, 2]  # always use columns B & C
+std_cols = [1, 2]
 
 if st.button('Run analysis'):
     if not abs_upl:
@@ -402,7 +429,7 @@ if 'results_df' in st.session_state:
     fig = st.session_state['fig']
     rd = int(st.session_state.get('round_digits', round_digits))
 
-    st.metric('R²', f"{stats_out['r_squared']:.4f}")
+    st.metric('R2', f"{stats_out['r_squared']:.4f}")
     st.metric('Slope (rounded)', f"{stats_out.get('slope_rounded', stats_out['slope']):.{rd}f}")
     st.metric('Intercept (rounded)', f"{stats_out.get('intercept_rounded', stats_out['intercept']):.{rd}f}")
 
@@ -426,7 +453,7 @@ if 'results_df' in st.session_state:
             raw_df = pd.read_excel(st.session_state['abs_path'], header=None)
             st.write('Raw absorbance DataFrame (first 10 rows):')
             st.dataframe(raw_df.head(10))
-            st.write('Wells used for standards (B&C, rows 0–7):')
+            st.write('Wells used for standards (B&C, rows 0-7):')
             st.dataframe(raw_df.iloc[0:8, [1, 2]])
             st.write('Wells used for 9th standard (D2 & E2):')
             st.dataframe(pd.DataFrame([raw_df.iloc[0, [3, 4]]]))
@@ -436,7 +463,7 @@ if 'results_df' in st.session_state:
             sample_start_local = base_local + physical_std_count_local
             st.write(
                 f'Sample data slice start row (0-based): {sample_start_local} '
-                f'→ Excel row {sample_start_local + 1}'
+                f'-> Excel row {sample_start_local + 1}'
             )
             cols_to_show = [c for c in [3, 4, 5, 6, 7, 8, 9, 10] if c < raw_df.shape[1]]
             if cols_to_show:
