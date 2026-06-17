@@ -277,6 +277,7 @@ def analyze_bca_plate_stream(
                 'Sample Volume (µl)': round(float(sample_vol), 2),
                 '2X Sample Volume (µl)': round(float(vol_2x), 2),
                 'Buffer Volume (µl)': round(float(buffer_vol), 2),
+                '2X Buffer Volume (µl)': round(float(buffer_vol * 2.0), 2),
             })
             sample_index += 1
 
