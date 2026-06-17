@@ -266,8 +266,8 @@ def analyze_bca_plate_stream(
                     'ug/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
                     'ug/ul': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
                     'Sample Volume (ul)': round(sv, 2),
-                    f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
                     'Buffer Volume (ul)': round(buffer_vol, 2),
+                    f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
                     f'{mx_label} Buffer Volume (ul)': round(buffer_vol_nx, 2),
                     '6X SDS Loading Dye (ul)': round(sds_dye, 2),
                 }
