@@ -275,8 +275,8 @@ def analyze_bca_plate_stream(
                 'µg/µl': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
                 target_label: round(float(target_ug), 3),
                 'Sample Volume (µl)': round(float(sample_vol), 2),
-                '2X Sample Volume (µl)': round(float(vol_2x), 2),
                 'Buffer Volume (µl)': round(float(buffer_vol), 2),
+                '2X Sample Volume (µl)': round(float(vol_2x), 2),
                 '2X Buffer Volume (µl)': round(float(buffer_vol * 2.0), 2),
             })
             sample_index += 1
