@@ -79,7 +79,18 @@ if __name__ == "__main__":
         run_streamlit_server_in_this_process()
     else:
         proc = launch_streamlit_subprocess()
-        wait_for_server()
+
+        time.sleep(2)
+        
+        print("Process return code:", proc.poll())
+        
+        if proc.poll() is not None:
+            print("Streamlit process exited immediately.")
+            sys.exit(1)
+        
+        if not wait_for_server():
+            print("Server never started.")
+            sys.exit(1)
         try:
             webview.create_window("BCA Plate Analysis", URL, width=1400, height=900)
             webview.start()
