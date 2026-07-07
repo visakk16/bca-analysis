@@ -8,18 +8,11 @@ import re
 st.set_page_config(page_title='BCA Plate Analysis', layout='wide')
 
 
-def analyze_bca_plate_stream(
-    absorbance_path: str,
-    config_path: str = None,
-    std_cols: list = None,
-    exclude_option: str = 'none',
-    dilution_override: float = None,
-    total_volume_override: float = None,
-    round_digits: int = 6,
-    target_ug_override: float = None,
-    sample_names_override: list = None,
-    multiplier: float = 2.0,
-):
+# ─── Stage 1: Parse the file and pull out raw standard absorbances ───────────
+
+def parse_standards(absorbance_path: str, config_path: str = None, std_cols: list = None):
+    """Reads the absorbance file and returns everything needed later, plus the
+    raw (sorted) standard concentration/absorbance arrays for the user to edit."""
     df = pd.read_excel(absorbance_path, header=None)
 
     # --- Defaults ---
@@ -54,22 +47,6 @@ def analyze_bca_plate_stream(
                         loading_volume = float(row['Value'])
         except Exception:
             pass
-
-    # --- UI overrides ---
-    if dilution_override is not None:
-        try:
-            dilution_factor = float(dilution_override)
-        except Exception:
-            pass
-
-    # None means user chose not to provide a loading volume
-    if total_volume_override is not None:
-        try:
-            loading_volume = float(total_volume_override)
-        except Exception:
-            pass
-
-    has_loading_volume = loading_volume is not None
 
     # --- Detect numeric header row ---
     header_like = False
@@ -150,19 +127,56 @@ def analyze_bca_plate_stream(
     conc_sorted = conc_arr[order]
     std_sorted = std_arr[order]
 
-    used_conc = conc_sorted.copy()
-    used_std = std_sorted.copy()
-    if exclude_option != 'none':
-        mask = np.ones_like(conc_sorted, dtype=bool)
-        if exclude_option in ('exclude_0', 'exclude_both'):
-            mask[0] = False
-        if exclude_option in ('exclude_2000', 'exclude_both'):
-            mask[-1] = False
-        used_conc = conc_sorted[mask]
-        used_std = std_sorted[mask]
+    return {
+        'df': df,
+        'base': base,
+        'physical_std_count': int(physical_std_count),
+        'conc_sorted': conc_sorted,
+        'std_sorted': std_sorted,
+        'dilution_factor': dilution_factor,
+        'loading_protein': loading_protein,
+        'loading_volume': loading_volume,
+        'sample_names': sample_names,
+    }
+
+
+# ─── Stage 2: Fit the (possibly edited) standards and compute sample volumes ──
+
+def run_analysis(
+    df: pd.DataFrame,
+    base: int,
+    used_conc: np.ndarray,
+    used_std: np.ndarray,
+    all_conc: np.ndarray,
+    all_std: np.ndarray,
+    physical_std_count: int,
+    dilution_factor: float,
+    loading_volume,
+    loading_protein: float,
+    dilution_override: float = None,
+    total_volume_override: float = None,
+    round_digits: int = 6,
+    target_ug_override: float = None,
+    sample_names_override: list = None,
+    multiplier: float = 2.0,
+):
+    # --- UI overrides ---
+    if dilution_override is not None:
+        try:
+            dilution_factor = float(dilution_override)
+        except Exception:
+            pass
+
+    if total_volume_override is not None:
+        try:
+            loading_volume = float(total_volume_override)
+        except Exception:
+            pass
+
+    has_loading_volume = loading_volume is not None
 
     if used_conc.size < 2:
-        raise ValueError('Not enough standards remaining after exclusion to fit a line (need >= 2).')
+        raise ValueError('Not enough standards included to fit a line (need >= 2).')
 
     # --- Linear regression ---
     coeffs = np.polyfit(used_conc, used_std, 1)
@@ -180,20 +194,32 @@ def analyze_bca_plate_stream(
 
     # --- Standard curve figure ---
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(used_conc, used_std, color='blue', label='Standards')
+    ax.scatter(used_conc, used_std, color='blue', label='Standards used in fit')
+
+    # Show excluded points (present in all_conc/all_std but not used_conc/used_std) in grey
+    used_pairs = set(zip(np.round(used_conc, 6), np.round(used_std, 6)))
+    excluded_mask = np.array([
+        (round(c, 6), round(s, 6)) not in used_pairs for c, s in zip(all_conc, all_std)
+    ])
+    if excluded_mask.any():
+        ax.scatter(
+            all_conc[excluded_mask], all_std[excluded_mask],
+            color='lightgray', label='Excluded points', marker='x'
+        )
+
     x_line = np.linspace(float(np.min(used_conc)), float(np.max(used_conc)), 100)
     y_line = slope_rounded * x_line + intercept_rounded
     ax.plot(
         x_line, y_line, '--r',
         label=f'y = {slope_rounded:.{rd}f}x + {intercept_rounded:.{rd}f}\nR2 = {r_squared:.4f}'
     )
-    for xc, yc in zip(used_conc, used_std):
+    for xc, yc in zip(all_conc, all_std):
         ax.annotate(
             f"{int(xc)}", (xc, yc),
             textcoords='offset points', xytext=(4, 4), fontsize=8, color='black'
         )
-    x_padding = max(1.0, (float(np.max(used_conc)) - float(np.min(used_conc))) * 0.03)
-    ax.set_xlim(float(np.min(used_conc)) - x_padding, float(np.max(used_conc)) + x_padding)
+    x_padding = max(1.0, (float(np.max(all_conc)) - float(np.min(all_conc))) * 0.03)
+    ax.set_xlim(float(np.min(all_conc)) - x_padding, float(np.max(all_conc)) + x_padding)
     ax.set_xlabel('Concentration (ug/ml)')
     ax.set_ylabel('Absorbance')
     ax.set_title('BCA Standard Curve')
@@ -245,13 +271,11 @@ def analyze_bca_plate_stream(
             conc_with_dilution = conc * dilution_factor
             ug_per_ul = conc_with_dilution / 1000.0
 
-            # Sample volume needed to reach target_ug
             if not np.isnan(ug_per_ul) and ug_per_ul > 0:
                 sample_vol = float(target_ug) / ug_per_ul
             else:
                 sample_vol = float('nan')
 
-            # Build row — columns that need loading volume get N/A if not provided
             if has_loading_volume:
                 lv = float(loading_volume)
                 sv = min(sample_vol, lv) if not np.isnan(sample_vol) else lv
@@ -286,15 +310,14 @@ def analyze_bca_plate_stream(
                     '6X SDS Loading Dye (ul)': 'N/A',
                 }
 
-            # Resolve sample name
             if sample_names_override and sample_index < len(sample_names_override):
                 candidate = sample_names_override[sample_index].strip()
                 if candidate == '':
                     sample_index += 1
                     continue
                 sample_name = candidate
-            elif sample_names and sample_index < len(sample_names):
-                sample_name = sample_names[sample_index]
+            elif sample_names_override is None and sample_index < 0:
+                sample_name = ''
             else:
                 sample_name = f"{col_letter(c1)}{int(row_idx) + 1}"
 
@@ -303,12 +326,13 @@ def analyze_bca_plate_stream(
             sample_index += 1
 
     results_df = pd.DataFrame(results)
-    cols = ['Sample'] + [c for c in results_df.columns if c != 'Sample']
-    results_df = results_df[cols]
+    if not results_df.empty:
+        cols = ['Sample'] + [c for c in results_df.columns if c != 'Sample']
+        results_df = results_df[cols]
 
     if sample_names_override:
         provided_nonempty = [s.strip() for s in sample_names_override if s and s.strip()]
-        if provided_nonempty:
+        if provided_nonempty and not results_df.empty:
             results_df = results_df[results_df['Sample'].isin(set(provided_nonempty))].copy()
 
     stats_out = {
@@ -317,8 +341,8 @@ def analyze_bca_plate_stream(
         'slope_rounded': slope_rounded,
         'intercept_rounded': intercept_rounded,
         'r_squared': r_squared,
-        'conc_sorted': conc_sorted.tolist(),
-        'std_sorted': std_sorted.tolist(),
+        'conc_sorted': all_conc.tolist(),
+        'std_sorted': all_std.tolist(),
         'used_conc': used_conc.tolist(),
         'used_std': used_std.tolist(),
         'physical_std_count': int(physical_std_count),
@@ -336,6 +360,32 @@ st.title('BCA Plate Analysis')
 st.write('Upload an absorbance Excel file (.xlsx).')
 
 abs_upl = st.file_uploader('Absorbance Excel file (.xlsx)', type=['xlsx'])
+
+# Parse standards as soon as a (new) file is uploaded
+if abs_upl is not None:
+    if st.session_state.get('uploaded_file_name') != abs_upl.name:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as t_abs:
+            t_abs.write(abs_upl.read())
+            abs_path = t_abs.name
+
+        st.session_state['uploaded_file_name'] = abs_upl.name
+        st.session_state['abs_path'] = abs_path
+
+        try:
+            parsed = parse_standards(abs_path, config_path=None, std_cols=[1, 2])
+            st.session_state['parsed'] = parsed
+            st.session_state['std_editor_df'] = pd.DataFrame({
+                'Concentration (ug/ml)': parsed['conc_sorted'],
+                'Absorbance': parsed['std_sorted'],
+                'Include in fit': [True] * len(parsed['conc_sorted']),
+            })
+            # clear any previous results since we have a new file
+            for k in ('results_df', 'stats_out', 'fig'):
+                st.session_state.pop(k, None)
+        except Exception as e:
+            st.error(f'Failed to parse standards: {e}')
+            st.session_state.pop('parsed', None)
+            st.session_state.pop('std_editor_df', None)
 
 st.write('Optional: enter dilution factor if your samples were diluted (e.g., 5 for a 1:5 dilution).')
 dilution_input = st.number_input('Dilution Factor:', min_value=1.0, value=5.0, step=1.0)
@@ -360,9 +410,7 @@ use_loading_volume = st.checkbox(
 )
 
 if use_loading_volume:
-    st.write(
-        'Enter total loading volume (ul) — the sum of sample + buffer per lane.'
-    )
+    st.write('Enter total loading volume (ul) — the sum of sample + buffer per lane.')
     total_volume_input = st.number_input('Total loading volume (ul):', min_value=1.0, value=40.0, step=1.0)
 else:
     total_volume_input = None
@@ -384,42 +432,70 @@ st.write(
 sample_names_text = st.text_area('Sample names (one per line):', value='')
 sample_names_list = sample_names_text.splitlines()
 
-exclude_option = st.selectbox(
-    'Exclude endpoints from fit',
-    ('none', 'exclude_0', 'exclude_2000', 'exclude_both')
-)
+# ─── Editable standards table ────────────────────────────────────────────────
 
-std_cols = [1, 2]
+if 'std_editor_df' in st.session_state:
+    st.subheader('Standard curve points')
+    st.write(
+        'Edit any concentration or absorbance value below, and check/uncheck any point(s) '
+        'to include or exclude them from the linear fit — not just the two endpoints.'
+    )
+    edited_std_df = st.data_editor(
+        st.session_state['std_editor_df'],
+        column_config={
+            'Concentration (ug/ml)': st.column_config.NumberColumn('Concentration (ug/ml)', format='%.2f'),
+            'Absorbance': st.column_config.NumberColumn('Absorbance', format='%.4f'),
+            'Include in fit': st.column_config.CheckboxColumn('Include in fit'),
+        },
+        hide_index=True,
+        num_rows='fixed',
+        key='std_editor',
+        use_container_width=True,
+    )
+    st.session_state['std_editor_df'] = edited_std_df
 
 if st.button('Run analysis'):
-    if not abs_upl:
-        st.error('Please upload an absorbance file.')
+    if 'parsed' not in st.session_state:
+        st.error('Please upload an absorbance file first.')
     else:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as t_abs:
-            t_abs.write(abs_upl.read())
-            abs_path = t_abs.name
+        parsed = st.session_state['parsed']
+        edited_df = st.session_state['std_editor_df']
 
-        try:
-            results_df, stats_out, fig = analyze_bca_plate_stream(
-                abs_path,
-                config_path=None,
-                std_cols=std_cols,
-                exclude_option=exclude_option,
-                dilution_override=dilution_input,
-                total_volume_override=total_volume_input,
-                round_digits=round_digits,
-                target_ug_override=target_ug_input,
-                sample_names_override=sample_names_list,
-                multiplier=multiplier_input,
-            )
-            st.session_state['results_df'] = results_df
-            st.session_state['stats_out'] = stats_out
-            st.session_state['fig'] = fig
-            st.session_state['abs_path'] = abs_path
-            st.session_state['round_digits'] = round_digits
-            st.session_state['multiplier'] = multiplier_input
-        except Exception as e:
-            st.error(f'Analysis failed: {e}')
+        all_conc = edited_df['Concentration (ug/ml)'].astype(float).values
+        all_std = edited_df['Absorbance'].astype(float).values
+        mask = edited_df['Include in fit'].astype(bool).values
+        used_conc = all_conc[mask]
+        used_std = all_std[mask]
+
+        if used_conc.size < 2:
+            st.error('At least 2 standard points must be included to fit a line.')
+        else:
+            try:
+                results_df, stats_out, fig = run_analysis(
+                    df=parsed['df'],
+                    base=parsed['base'],
+                    used_conc=used_conc,
+                    used_std=used_std,
+                    all_conc=all_conc,
+                    all_std=all_std,
+                    physical_std_count=parsed['physical_std_count'],
+                    dilution_factor=parsed['dilution_factor'],
+                    loading_volume=parsed['loading_volume'],
+                    loading_protein=parsed['loading_protein'],
+                    dilution_override=dilution_input,
+                    total_volume_override=total_volume_input,
+                    round_digits=round_digits,
+                    target_ug_override=target_ug_input,
+                    sample_names_override=sample_names_list,
+                    multiplier=multiplier_input,
+                )
+                st.session_state['results_df'] = results_df
+                st.session_state['stats_out'] = stats_out
+                st.session_state['fig'] = fig
+                st.session_state['round_digits'] = round_digits
+                st.session_state['multiplier'] = multiplier_input
+            except Exception as e:
+                st.error(f'Analysis failed: {e}')
 
 # ─── Results ─────────────────────────────────────────────────────────────────
 
@@ -440,9 +516,9 @@ if 'results_df' in st.session_state:
     st.download_button('Download results CSV', csv, file_name='bca_results.csv', mime='text/csv')
 
     if st.checkbox('Show raw standard arrays and input slice'):
-        st.write('Concentrations (sorted):')
+        st.write('Concentrations (all, sorted):')
         st.write(stats_out.get('conc_sorted'))
-        st.write('Absorbances (sorted):')
+        st.write('Absorbances (all, sorted):')
         st.write(stats_out.get('std_sorted'))
         st.write('Concentrations used for fit:')
         st.write(stats_out.get('used_conc'))
