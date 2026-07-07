@@ -438,7 +438,7 @@ if 'std_editor_df' in st.session_state:
     st.subheader('Standard curve points')
     st.write(
         'Edit any concentration or absorbance value below, and check/uncheck any point(s) '
-        'to include or exclude them from the linear fit — not just the two endpoints.'
+        'to include or exclude them from the linear fit.'
     )
     edited_std_df = st.data_editor(
         st.session_state['std_editor_df'],
