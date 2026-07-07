@@ -4,12 +4,15 @@ import subprocess
 import time
 import sys
 import os
+import webbrowser
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "bca_app.py")
 
 STREAMLIT_SERVER_FLAG = "--run-streamlit-server"
+PORT = 8501
+URL = f"http://localhost:{PORT}"
 
 
 def resource_path(relative_path):
@@ -29,6 +32,7 @@ def run_streamlit_server_in_this_process():
         "streamlit",
         "run",
         resource_path("bca_app.py"),
+        f"--server.port={PORT}",
         "--server.headless=true",
         "--browser.gatherUsageStats=false",
     ]
@@ -39,7 +43,7 @@ def launch_streamlit_subprocess():
     if getattr(sys, "frozen", False):
         # Re-launch our own frozen exe as a *child process* with a hidden
         # flag. That child process hits the STREAMLIT_SERVER_FLAG branch
-        # below and runs Streamlit in ITS OWN main thread -- a real separate
+        # above and runs Streamlit in ITS OWN main thread -- a real separate
         # process, just like "python -m streamlit run ..." would be.
         cmd = [sys.executable, STREAMLIT_SERVER_FLAG]
     else:
@@ -49,13 +53,14 @@ def launch_streamlit_subprocess():
             "streamlit",
             "run",
             APP,
+            f"--server.port={PORT}",
             "--server.headless=true",
             "--browser.gatherUsageStats=false",
         ]
     return subprocess.Popen(cmd)
 
 
-def wait_for_server(url="http://localhost:8501", timeout=30):
+def wait_for_server(url=URL, timeout=30):
     """Poll until Streamlit responds instead of guessing with a fixed sleep --
     first launches can be slow while antivirus scans freshly-extracted files."""
     start = time.time()
@@ -75,6 +80,20 @@ if __name__ == "__main__":
     else:
         proc = launch_streamlit_subprocess()
         wait_for_server()
-        webview.create_window("BCA Plate Analysis", "http://localhost:8501", width=1400, height=900)
-        webview.start()
-        proc.terminate()
+        try:
+            webview.create_window("BCA Plate Analysis", URL, width=1400, height=900)
+            webview.start()
+        except Exception as e:
+            # Most likely cause: the Microsoft Edge WebView2 runtime isn't
+            # installed/available on this machine. Fall back to opening the
+            # app in the user's default browser instead of just crashing.
+            print(f"[desktop] Could not open the native app window: {e}")
+            print(f"[desktop] Opening {URL} in your default browser instead.")
+            webbrowser.open(URL)
+            print("[desktop] Close this window to stop the app.")
+            try:
+                proc.wait()
+            except KeyboardInterrupt:
+                pass
+        finally:
+            proc.terminate()
