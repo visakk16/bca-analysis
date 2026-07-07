@@ -271,43 +271,82 @@ def run_analysis(
             conc_with_dilution = conc * dilution_factor
             ug_per_ul = conc_with_dilution / 1000.0
 
-            if not np.isnan(ug_per_ul) and ug_per_ul > 0:
+            # A well only has a usable protein concentration if ug_per_ul is a
+            # real, positive number. Anything else (blank/empty well, or a
+            # well reading at/below the standard curve intercept) cannot be
+            # converted into a sample volume, and we must not disguise that
+            # as a valid result.
+            conc_valid = (not np.isnan(ug_per_ul)) and ug_per_ul > 0
+
+            if conc_valid:
                 sample_vol = float(target_ug) / ug_per_ul
             else:
                 sample_vol = float('nan')
 
             if has_loading_volume:
                 lv = float(loading_volume)
-                sv = min(sample_vol, lv) if not np.isnan(sample_vol) else lv
-                buffer_vol = max(0.0, lv - sv)
-                vol_nx = multiplier * sv
-                buffer_vol_nx = multiplier * buffer_vol
-                sds_dye = lv / 5.0
-                row = {
-                    'Sample': None,
-                    'Absorbance': round(abs_mean, 3),
-                    'Concentration (ug/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
-                    'ug/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
-                    'ug/ul': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
-                    'Sample Volume (ul)': round(sv, 2),
-                    'Buffer Volume (ul)': round(buffer_vol, 2),
-                    f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
-                    f'{mx_label} Buffer Volume (ul)': round(buffer_vol_nx, 2),
-                    '6X SDS Loading Dye (ul)': round(sds_dye, 2),
-                }
+
+                if not conc_valid:
+                    # Failure case: negative/zero/NaN concentration.
+                    # Do NOT fall back to "full loading volume, 0 buffer" --
+                    # that silently hides a bad well as if it were a real
+                    # low-target result.
+                    row = {
+                        'Sample': None,
+                        'Absorbance': round(abs_mean, 3),
+                        'Concentration (ug/ml)': round(float(conc), 2) if not np.isnan(conc) else float('nan'),
+                        'ug/ml (with dilution)': round(float(conc_with_dilution), 2) if not np.isnan(conc_with_dilution) else float('nan'),
+                        'ug/ul': round(float(ug_per_ul), 4) if not np.isnan(ug_per_ul) else float('nan'),
+                        'Sample Volume (ul)': 'N/A (conc <= 0)',
+                        'Buffer Volume (ul)': 'N/A (conc <= 0)',
+                        f'{mx_label} Sample Volume (ul)': 'N/A',
+                        f'{mx_label} Buffer Volume (ul)': 'N/A',
+                        '6X SDS Loading Dye (ul)': round(lv / 5.0, 2),
+                        'Target Met?': 'N/A (conc <= 0)',
+                        'Actual ug Loaded': 'N/A',
+                    }
+                else:
+                    # Real concentration. Cap the sample volume at the total
+                    # loading volume (can't pipette more sample than the lane
+                    # holds), but if that cap kicks in, say so instead of
+                    # quietly showing 0 buffer as if the target was hit.
+                    sv = min(sample_vol, lv)
+                    buffer_vol = max(0.0, lv - sv)
+                    vol_nx = multiplier * sv
+                    buffer_vol_nx = multiplier * buffer_vol
+                    sds_dye = lv / 5.0
+                    actual_ug_loaded = sv * ug_per_ul
+                    under_loaded = sample_vol > lv
+
+                    row = {
+                        'Sample': None,
+                        'Absorbance': round(abs_mean, 3),
+                        'Concentration (ug/ml)': round(float(conc), 2),
+                        'ug/ml (with dilution)': round(float(conc_with_dilution), 2),
+                        'ug/ul': round(float(ug_per_ul), 4),
+                        'Sample Volume (ul)': round(sv, 2),
+                        'Buffer Volume (ul)': round(buffer_vol, 2),
+                        f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
+                        f'{mx_label} Buffer Volume (ul)': round(buffer_vol_nx, 2),
+                        '6X SDS Loading Dye (ul)': round(sds_dye, 2),
+                        'Target Met?': 'No (under-loaded)' if under_loaded else 'Yes',
+                        'Actual ug Loaded': round(actual_ug_loaded, 2),
+                    }
             else:
-                sv_display = round(sample_vol, 2) if not np.isnan(sample_vol) else float('nan')
+                sv_display = round(sample_vol, 2) if conc_valid else 'N/A (conc <= 0)'
                 row = {
                     'Sample': None,
                     'Absorbance': round(abs_mean, 3),
-                    'Concentration (ug/ml)': round(float(conc) if not np.isnan(conc) else float('nan'), 2),
-                    'ug/ml (with dilution)': round(float(conc_with_dilution) if not np.isnan(conc_with_dilution) else float('nan'), 2),
-                    'ug/ul': round(float(ug_per_ul) if not np.isnan(ug_per_ul) else float('nan'), 4),
+                    'Concentration (ug/ml)': round(float(conc), 2) if not np.isnan(conc) else float('nan'),
+                    'ug/ml (with dilution)': round(float(conc_with_dilution), 2) if not np.isnan(conc_with_dilution) else float('nan'),
+                    'ug/ul': round(float(ug_per_ul), 4) if not np.isnan(ug_per_ul) else float('nan'),
                     'Sample Volume (ul)': sv_display,
                     'Buffer Volume (ul)': 'N/A',
                     f'{mx_label} Sample Volume (ul)': 'N/A',
                     f'{mx_label} Buffer Volume (ul)': 'N/A',
                     '6X SDS Loading Dye (ul)': 'N/A',
+                    'Target Met?': 'N/A (no loading volume set)',
+                    'Actual ug Loaded': 'N/A',
                 }
 
             if sample_names_override and sample_index < len(sample_names_override):
