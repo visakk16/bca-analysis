@@ -57,7 +57,12 @@ def launch_streamlit_subprocess():
             "--server.headless=true",
             "--browser.gatherUsageStats=false",
         ]
-    return subprocess.Popen(cmd)
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
 def wait_for_server(url=URL, timeout=30):
@@ -79,12 +84,16 @@ if __name__ == "__main__":
         run_streamlit_server_in_this_process()
     else:
         proc = launch_streamlit_subprocess()
-
         time.sleep(2)
         
         print("Process return code:", proc.poll())
         
         if proc.poll() is not None:
+            stdout, stderr = proc.communicate()
+            print("STDOUT:")
+            print(stdout)
+            print("STDERR:")
+            print(stderr)
             print("Streamlit process exited immediately.")
             sys.exit(1)
         
