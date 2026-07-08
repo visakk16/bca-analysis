@@ -27,6 +27,8 @@ def run_streamlit_server_in_this_process():
     Streamlit installs signal handlers on startup, which Python only allows
     from the main thread of the main interpreter -- so this must never be
     called from a background thread."""
+    os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
+
     from streamlit.web import cli as stcli
     sys.argv = [
         "streamlit",
