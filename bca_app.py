@@ -1,9 +1,13 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import tempfile
 import re
+import base64
+import io
+import json
 
 st.set_page_config(page_title='BCA Plate Analysis', layout='wide')
 
@@ -553,6 +557,64 @@ if 'results_df' in st.session_state:
 
     csv = results_df.to_csv(index=False).encode('utf-8')
     st.download_button('Download results CSV', csv, file_name='bca_results.csv', mime='text/csv')
+
+    # --- Print Chart & Table -------------------------------------------------
+    # Streamlit's DOM/class names aren't stable enough to reliably hide
+    # everything else on the page via print CSS, so instead we build a
+    # standalone printable HTML document (chart as an embedded image, table
+    # as plain HTML) and pop it open in a new window, then trigger the
+    # browser's native print dialog on it.
+    _img_buf = io.BytesIO()
+    fig.savefig(_img_buf, format='png', dpi=150, bbox_inches='tight')
+    _img_buf.seek(0)
+    _img_b64 = base64.b64encode(_img_buf.read()).decode('utf-8')
+
+    _table_html = results_df.to_html(index=False, border=0, na_rep='N/A')
+
+    _print_doc = f"""
+    <html>
+    <head>
+    <title>BCA Plate Analysis Results</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; padding: 24px; color: #111; }}
+        h2 {{ margin-top: 32px; }}
+        img {{ max-width: 100%; height: auto; margin-bottom: 12px; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top: 8px; }}
+        th, td {{ border: 1px solid #999; padding: 6px 10px; text-align: center; font-size: 12px; }}
+        th {{ background: #eee; }}
+        @media print {{
+            body {{ padding: 0; }}
+        }}
+    </style>
+    </head>
+    <body>
+        <h2>BCA Standard Curve</h2>
+        <img src="data:image/png;base64,{_img_b64}" />
+        <h2>Results</h2>
+        {_table_html}
+    </body>
+    </html>
+    """
+
+    _print_doc_js = json.dumps(_print_doc)
+
+    components.html(
+        f"""
+        <button
+            onclick='
+                var w = window.open("", "_blank");
+                w.document.write({_print_doc_js});
+                w.document.close();
+                w.focus();
+                setTimeout(function() {{ w.print(); }}, 500);
+            '
+            style="padding:8px 16px;font-size:14px;cursor:pointer;border-radius:6px;border:1px solid #999;background:#f5f5f5;"
+        >
+            🖨️ Print Chart &amp; Table
+        </button>
+        """,
+        height=50,
+    )
 
     if st.checkbox('Show raw standard arrays and input slice'):
         st.write('Concentrations (all, sorted):')
