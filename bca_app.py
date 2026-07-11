@@ -159,6 +159,104 @@ def parse_standards(absorbance_path: str, config_path: str = None, std_cols: lis
 
 # ─── Stage 2: Fit the (possibly edited) standards and compute sample volumes ──
 
+def calculate_loading_info(ug_per_ul: float, target_ug: float, loading_volume, multiplier: float) -> dict:
+    """Given one well's ug/ul, works out sample/buffer/scaled volumes and
+    whether the target protein amount was actually hit.
+
+    Returns a dict of plain numeric values (or None where not applicable) --
+    no display formatting or 'N/A' strings live here. That keeps this function
+    pure math, so it's easy to test and easy to trust on its own.
+    """
+    conc_valid = (not np.isnan(ug_per_ul)) and ug_per_ul > 0
+    has_loading_volume = loading_volume is not None
+
+    info = {'conc_valid': conc_valid, 'has_loading_volume': has_loading_volume}
+
+    if not conc_valid:
+        # Blank/empty well, or absorbance at/below the standard curve
+        # intercept -- there's no usable concentration to compute a volume
+        # from at all.
+        return info
+
+    sample_vol = float(target_ug) / ug_per_ul
+
+    if not has_loading_volume:
+        # No total loading volume set -- just report the raw sample volume,
+        # there's no buffer/scaled/SDS concept without a lane total.
+        info['sample_vol'] = sample_vol
+        return info
+
+    # Real concentration + a known lane total. Cap the sample volume at the
+    # lane's total volume (can't pipette more sample than the lane holds);
+    # if that cap kicks in, the target protein amount wasn't actually hit,
+    # which we flag rather than silently reporting a "full" result.
+    lv = float(loading_volume)
+    sv = min(sample_vol, lv)
+    buffer_vol = max(0.0, lv - sv)
+
+    info.update({
+        'sample_vol': sv,
+        'buffer_vol': buffer_vol,
+        'vol_nx': multiplier * sv,
+        'buffer_vol_nx': multiplier * buffer_vol,
+        'sds_dye': lv / 5.0,
+        'actual_ug_loaded': sv * ug_per_ul,
+        'under_loaded': sample_vol > lv,
+    })
+    return info
+
+
+def format_result_row(abs_mean, conc, conc_with_dilution, ug_per_ul, loading_info: dict,
+                       loading_volume, mx_label: str) -> dict:
+    """Turns the raw numbers for one well into the display-ready row dict,
+    handling all three scenarios (bad concentration / no loading volume set /
+    normal case) in one place instead of three near-duplicate dictionaries."""
+    row = {
+        'Sample': None,
+        'Absorbance': round(abs_mean, 3),
+        'Concentration (ug/ml)': round(float(conc), 2) if not np.isnan(conc) else float('nan'),
+        'ug/ml (with dilution)': round(float(conc_with_dilution), 2) if not np.isnan(conc_with_dilution) else float('nan'),
+        'ug/ul': round(float(ug_per_ul), 4) if not np.isnan(ug_per_ul) else float('nan'),
+    }
+
+    conc_valid = loading_info['conc_valid']
+    has_loading_volume = loading_info['has_loading_volume']
+
+    if not conc_valid and has_loading_volume:
+        row.update({
+            'Sample Volume (ul)': 'N/A (conc <= 0)',
+            'Buffer Volume (ul)': 'N/A (conc <= 0)',
+            f'{mx_label} Sample Volume (ul)': 'N/A',
+            f'{mx_label} Buffer Volume (ul)': 'N/A',
+            '6X SDS Loading Dye (ul)': round(float(loading_volume) / 5.0, 2),
+            'Target Met?': 'N/A (conc <= 0)',
+            'Actual ug Loaded': 'N/A',
+        })
+    elif not has_loading_volume:
+        row.update({
+            'Sample Volume (ul)': round(loading_info['sample_vol'], 2) if conc_valid else 'N/A (conc <= 0)',
+            'Buffer Volume (ul)': 'N/A',
+            f'{mx_label} Sample Volume (ul)': 'N/A',
+            f'{mx_label} Buffer Volume (ul)': 'N/A',
+            '6X SDS Loading Dye (ul)': 'N/A',
+            'Target Met?': 'N/A (no loading volume set)',
+            'Actual ug Loaded': 'N/A',
+        })
+    else:
+        # conc_valid and has_loading_volume -- the normal case
+        row.update({
+            'Sample Volume (ul)': round(loading_info['sample_vol'], 2),
+            'Buffer Volume (ul)': round(loading_info['buffer_vol'], 2),
+            f'{mx_label} Sample Volume (ul)': round(loading_info['vol_nx'], 2),
+            f'{mx_label} Buffer Volume (ul)': round(loading_info['buffer_vol_nx'], 2),
+            '6X SDS Loading Dye (ul)': round(loading_info['sds_dye'], 2),
+            'Target Met?': 'No (under-loaded)' if loading_info['under_loaded'] else 'Yes',
+            'Actual ug Loaded': round(loading_info['actual_ug_loaded'], 2),
+        })
+
+    return row
+
+
 def run_analysis(
     df: pd.DataFrame,
     base: int,
@@ -288,83 +386,11 @@ def run_analysis(
             conc_with_dilution = conc * dilution_factor
             ug_per_ul = conc_with_dilution / 1000.0
 
-            # A well only has a usable protein concentration if ug_per_ul is a
-            # real, positive number. Anything else (blank/empty well, or a
-            # well reading at/below the standard curve intercept) cannot be
-            # converted into a sample volume, and we must not disguise that
-            # as a valid result.
-            conc_valid = (not np.isnan(ug_per_ul)) and ug_per_ul > 0
-
-            if conc_valid:
-                sample_vol = float(target_ug) / ug_per_ul
-            else:
-                sample_vol = float('nan')
-
-            if has_loading_volume:
-                lv = float(loading_volume)
-
-                if not conc_valid:
-                    # Failure case: negative/zero/NaN concentration.
-                    # Do NOT fall back to "full loading volume, 0 buffer" --
-                    # that silently hides a bad well as if it were a real
-                    # low-target result.
-                    row = {
-                        'Sample': None,
-                        'Absorbance': round(abs_mean, 3),
-                        'Concentration (ug/ml)': round(float(conc), 2) if not np.isnan(conc) else float('nan'),
-                        'ug/ml (with dilution)': round(float(conc_with_dilution), 2) if not np.isnan(conc_with_dilution) else float('nan'),
-                        'ug/ul': round(float(ug_per_ul), 4) if not np.isnan(ug_per_ul) else float('nan'),
-                        'Sample Volume (ul)': 'N/A (conc <= 0)',
-                        'Buffer Volume (ul)': 'N/A (conc <= 0)',
-                        f'{mx_label} Sample Volume (ul)': 'N/A',
-                        f'{mx_label} Buffer Volume (ul)': 'N/A',
-                        '6X SDS Loading Dye (ul)': round(lv / 5.0, 2),
-                        'Target Met?': 'N/A (conc <= 0)',
-                        'Actual ug Loaded': 'N/A',
-                    }
-                else:
-                    # Real concentration. Cap the sample volume at the total
-                    # loading volume (can't pipette more sample than the lane
-                    # holds), but if that cap kicks in, say so instead of
-                    # quietly showing 0 buffer as if the target was hit.
-                    sv = min(sample_vol, lv)
-                    buffer_vol = max(0.0, lv - sv)
-                    vol_nx = multiplier * sv
-                    buffer_vol_nx = multiplier * buffer_vol
-                    sds_dye = lv / 5.0
-                    actual_ug_loaded = sv * ug_per_ul
-                    under_loaded = sample_vol > lv
-
-                    row = {
-                        'Sample': None,
-                        'Absorbance': round(abs_mean, 3),
-                        'Concentration (ug/ml)': round(float(conc), 2),
-                        'ug/ml (with dilution)': round(float(conc_with_dilution), 2),
-                        'ug/ul': round(float(ug_per_ul), 4),
-                        'Sample Volume (ul)': round(sv, 2),
-                        'Buffer Volume (ul)': round(buffer_vol, 2),
-                        f'{mx_label} Sample Volume (ul)': round(vol_nx, 2),
-                        f'{mx_label} Buffer Volume (ul)': round(buffer_vol_nx, 2),
-                        '6X SDS Loading Dye (ul)': round(sds_dye, 2),
-                        'Target Met?': 'No (under-loaded)' if under_loaded else 'Yes',
-                        'Actual ug Loaded': round(actual_ug_loaded, 2),
-                    }
-            else:
-                sv_display = round(sample_vol, 2) if conc_valid else 'N/A (conc <= 0)'
-                row = {
-                    'Sample': None,
-                    'Absorbance': round(abs_mean, 3),
-                    'Concentration (ug/ml)': round(float(conc), 2) if not np.isnan(conc) else float('nan'),
-                    'ug/ml (with dilution)': round(float(conc_with_dilution), 2) if not np.isnan(conc_with_dilution) else float('nan'),
-                    'ug/ul': round(float(ug_per_ul), 4) if not np.isnan(ug_per_ul) else float('nan'),
-                    'Sample Volume (ul)': sv_display,
-                    'Buffer Volume (ul)': 'N/A',
-                    f'{mx_label} Sample Volume (ul)': 'N/A',
-                    f'{mx_label} Buffer Volume (ul)': 'N/A',
-                    '6X SDS Loading Dye (ul)': 'N/A',
-                    'Target Met?': 'N/A (no loading volume set)',
-                    'Actual ug Loaded': 'N/A',
-                }
+            loading_info = calculate_loading_info(ug_per_ul, target_ug, loading_volume, multiplier)
+            row = format_result_row(
+                abs_mean, conc, conc_with_dilution, ug_per_ul,
+                loading_info, loading_volume, mx_label,
+            )
 
             if sample_names_override and sample_index < len(sample_names_override):
                 candidate = sample_names_override[sample_index].strip()
