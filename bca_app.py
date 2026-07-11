@@ -9,6 +9,19 @@ import base64
 import io
 import json
 
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
+
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import (
+    SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+)
+
 st.set_page_config(page_title='BCA Plate Analysis', layout='wide')
 
 
@@ -397,6 +410,140 @@ def run_analysis(
     return results_df, stats_out, fig
 
 
+# ─── Stage 3: Build downloadable Excel / PDF reports ──────────────────────────
+
+def _clean_cell(val):
+    """Turn NaN floats into a plain 'N/A' string; leave everything else as-is."""
+    if isinstance(val, float) and np.isnan(val):
+        return 'N/A'
+    return val
+
+
+def build_excel_report(results_df: pd.DataFrame, stats_out: dict, fig, round_digits: int) -> bytes:
+    """Builds an .xlsx with a Results sheet (summary stats + full results table)
+    and a Standard Curve sheet (the chart, embedded as an image)."""
+    rd = int(round_digits)
+    wb = Workbook()
+
+    # --- Results sheet ---
+    ws = wb.active
+    ws.title = 'Results'
+
+    title_font = Font(name='Arial', bold=True, size=14)
+    body_font = Font(name='Arial', size=10)
+    header_font = Font(name='Arial', bold=True, size=10, color='FFFFFF')
+    header_fill = PatternFill(start_color='4F81BD', end_color='4F81BD', fill_type='solid')
+    center = Alignment(horizontal='center', vertical='center')
+
+    ws['A1'] = 'BCA Plate Analysis Results'
+    ws['A1'].font = title_font
+
+    ws['A3'] = 'R2'
+    ws['B3'] = round(stats_out['r_squared'], 4)
+    ws['A4'] = 'Slope (rounded)'
+    ws['B4'] = round(stats_out.get('slope_rounded', stats_out['slope']), rd)
+    ws['A5'] = 'Intercept (rounded)'
+    ws['B5'] = round(stats_out.get('intercept_rounded', stats_out['intercept']), rd)
+    for r in (3, 4, 5):
+        ws.cell(row=r, column=1).font = body_font
+        ws.cell(row=r, column=2).font = body_font
+
+    header_row = 7
+    for c_idx, col_name in enumerate(results_df.columns, start=1):
+        cell = ws.cell(row=header_row, column=c_idx, value=col_name)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+
+    for r_offset, row in enumerate(results_df.itertuples(index=False), start=1):
+        for c_idx, val in enumerate(row, start=1):
+            cell = ws.cell(row=header_row + r_offset, column=c_idx, value=_clean_cell(val))
+            cell.font = body_font
+            cell.alignment = center
+
+    for c_idx, col_name in enumerate(results_df.columns, start=1):
+        ws.column_dimensions[get_column_letter(c_idx)].width = max(14, len(str(col_name)) + 4)
+
+    # --- Standard Curve sheet (chart image) ---
+    ws_chart = wb.create_sheet('Standard Curve')
+    img_buf = io.BytesIO()
+    fig.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+    img_buf.seek(0)
+    xl_img = XLImage(img_buf)
+    ws_chart.add_image(xl_img, 'A1')
+
+    out_buf = io.BytesIO()
+    wb.save(out_buf)
+    out_buf.seek(0)
+    return out_buf.getvalue()
+
+
+def build_pdf_report(results_df: pd.DataFrame, stats_out: dict, fig, round_digits: int) -> bytes:
+    """Builds a landscape-letter PDF with the summary stats, the standard curve
+    chart, and the full results table."""
+    rd = int(round_digits)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(letter),
+        leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24,
+    )
+    styles = getSampleStyleSheet()
+
+    header_cell_style = styles['Normal'].clone('header_cell')
+    header_cell_style.fontSize = 6.5
+    header_cell_style.leading = 8
+    header_cell_style.textColor = colors.white
+    header_cell_style.alignment = 1  # center
+
+    body_cell_style = styles['Normal'].clone('body_cell')
+    body_cell_style.fontSize = 6.5
+    body_cell_style.leading = 8
+    body_cell_style.alignment = 1  # center
+
+    story = []
+    story.append(Paragraph('BCA Plate Analysis Results', styles['Title']))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(f"R2: {stats_out['r_squared']:.4f}", styles['Normal']))
+    story.append(Paragraph(
+        f"Slope (rounded): {stats_out.get('slope_rounded', stats_out['slope']):.{rd}f}",
+        styles['Normal'],
+    ))
+    story.append(Paragraph(
+        f"Intercept (rounded): {stats_out.get('intercept_rounded', stats_out['intercept']):.{rd}f}",
+        styles['Normal'],
+    ))
+    story.append(Spacer(1, 14))
+
+    img_buf = io.BytesIO()
+    fig.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
+    img_buf.seek(0)
+    story.append(RLImage(img_buf, width=6.0 * inch, height=3.6 * inch))
+    story.append(Spacer(1, 14))
+
+    table_data = [[Paragraph(str(c), header_cell_style) for c in results_df.columns]]
+    for row in results_df.itertuples(index=False):
+        table_data.append([
+            Paragraph(str(_clean_cell(val)), body_cell_style) for val in row
+        ])
+
+    num_cols = len(results_df.columns)
+    avail_width = landscape(letter)[0] - 48  # minus left/right margins
+    col_width = avail_width / num_cols
+
+    tbl = Table(table_data, colWidths=[col_width] * num_cols, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4F81BD')),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F2F2')]),
+    ]))
+    story.append(tbl)
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ─── Streamlit UI ────────────────────────────────────────────────────────────
 
 st.title('BCA Plate Analysis')
@@ -556,7 +703,26 @@ if 'results_df' in st.session_state:
     st.dataframe(results_df)
 
     csv = results_df.to_csv(index=False).encode('utf-8')
-    st.download_button('Download results CSV', csv, file_name='bca_results.csv', mime='text/csv')
+
+    dl_col1, dl_col2, dl_col3 = st.columns(3)
+    with dl_col1:
+        st.download_button('Download results CSV', csv, file_name='bca_results.csv', mime='text/csv')
+    with dl_col2:
+        excel_bytes = build_excel_report(results_df, stats_out, fig, rd)
+        st.download_button(
+            'Download Excel report (.xlsx)',
+            excel_bytes,
+            file_name='bca_results.xlsx',
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    with dl_col3:
+        pdf_bytes = build_pdf_report(results_df, stats_out, fig, rd)
+        st.download_button(
+            'Download PDF report (.pdf)',
+            pdf_bytes,
+            file_name='bca_results.pdf',
+            mime='application/pdf',
+        )
 
     # --- Print Chart & Table -------------------------------------------------
     # Streamlit's DOM/class names aren't stable enough to reliably hide
