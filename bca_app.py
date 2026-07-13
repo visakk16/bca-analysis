@@ -570,10 +570,78 @@ def build_pdf_report(results_df: pd.DataFrame, stats_out: dict, fig, round_digit
     return buf.getvalue()
 
 
+def build_plate_map_html() -> str:
+    """Builds an HTML plate-map grid showing exactly how this app reads a
+    plate: which wells are standards, which are samples, and which duplicate
+    pairs belong together. This mirrors the app's real parsing logic (rows
+    A-H, columns 1-10) -- it isn't just illustrative, it's the actual layout
+    the code expects.
+    """
+    rows = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+    num_cols = 10
+
+    labels = {}
+    for i, r in enumerate(rows):
+        labels[(r, 1)] = f'Std {i + 1}'
+        labels[(r, 2)] = f'Std {i + 1}'
+    labels[('A', 3)] = 'Std 9'
+    labels[('A', 4)] = 'Std 9'
+
+    sample_num = 1
+    for c1, c2 in [(3, 4), (5, 6), (7, 8), (9, 10)]:
+        for r in rows[1:]:
+            labels[(r, c1)] = f'Sample {sample_num}'
+            labels[(r, c2)] = f'Sample {sample_num}'
+            sample_num += 1
+
+    # Give every unique label a stable pastel color so a duplicate pair
+    # (e.g. B3 and B4) always shares the same shading -- that's the whole
+    # point of the illustration.
+    palette = [
+        '#FFD6D6', '#FFE8C2', '#FFF6B3', '#DFF7C2', '#C2F0E0',
+        '#C2E3F7', '#D6C2F7', '#F7C2E8', '#E0E0E0', '#C2F0C2',
+    ]
+    unique_labels = sorted(set(labels.values()), key=lambda s: (s.split()[0], int(s.split()[1])))
+    color_for_label = {lbl: palette[i % len(palette)] for i, lbl in enumerate(unique_labels)}
+
+    header_cells = ''.join(f'<th style="padding:6px 10px;">{c}</th>' for c in range(1, num_cols + 1))
+    body_rows = ''
+    for r in rows:
+        row_cells = f'<th style="padding:6px 10px;">{r}</th>'
+        for c in range(1, num_cols + 1):
+            label = labels.get((r, c), '')
+            color = color_for_label.get(label, '#F5F5F5')
+            row_cells += (
+                f'<td style="padding:6px 10px; text-align:center; '
+                f'background:{color}; border:1px solid #999; font-size:12px;">{label}</td>'
+            )
+        body_rows += f'<tr>{row_cells}</tr>'
+
+    html = f"""
+    <table style="border-collapse:collapse; font-family:Arial, sans-serif;">
+        <tr><th></th>{header_cells}</tr>
+        {body_rows}
+    </table>
+    """
+    return html
+
+
 # ─── Streamlit UI ────────────────────────────────────────────────────────────
 
 st.title('BCA Plate Analysis')
 st.write('Upload an absorbance Excel file (.xlsx).')
+
+with st.expander('Show example plate layout (click to expand)'):
+    st.markdown(
+        "This app reads plate wells in **duplicate pairs** -- each pair shares "
+        "one absorbance value. Standards fill columns 1-2 (rows A-H, one "
+        "standard per row) plus a 9th standard at A3/A4. Once the standards "
+        "are used up, sample loading starts right after -- **B3/B4 is Sample "
+        "1**, and it continues down and then across the remaining column "
+        "pairs. Wells with the same color/label below are the duplicate pair "
+        "for that standard or sample."
+    )
+    st.markdown(build_plate_map_html(), unsafe_allow_html=True)
 
 abs_upl = st.file_uploader('Absorbance Excel file (.xlsx)', type=['xlsx'])
 
