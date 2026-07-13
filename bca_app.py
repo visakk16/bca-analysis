@@ -653,18 +653,16 @@ st.write('Upload an absorbance Excel file (.xlsx).')
 
 with st.expander('Show example plate layout (click to expand)'):
     st.markdown(
-        "This app reads plate wells in **duplicate pairs** -- each pair shares "
+        "Plate wells are read in **duplicate pairs** -- each pair shares "
         "one absorbance value (matching labels below mark a pair, e.g. B3/B4). "
         "Standards fill columns 1-2 (rows A-H, one standard per row, highest "
         "concentration at Standard 1 down to lowest at Standard 8) plus a 9th "
-        "standard at A3/A4 -- shaded darkest-to-white to mirror how a real "
-        "absorbance heatmap looks, with Standard 9 being the lowest/blank. "
+        "standard at A3/A4"
         "Once the standards are used up, sample loading starts right after -- "
         "**B3/B4 is Sample 1**. Row A of columns 3-4 is taken by Standard 9, "
         "so that first sample column-pair only has 7 rows (B-H) -- but every "
         "column-pair after that has a free row A, so those use all 8 rows "
-        "(A-H). That gives 7 + 8 + 8 + 8 = **31 samples total** across the "
-        "plate."
+        "(A-H). "
     )
     st.markdown(build_plate_map_html(), unsafe_allow_html=True)
 
