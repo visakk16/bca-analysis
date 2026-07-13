@@ -359,7 +359,10 @@ def run_analysis(
         mx_label = 'NX'
 
     # --- Read samples ---
-    sample_start = base + 1
+    # Row A of the first sample column-pair (3,4) is occupied by Standard 9,
+    # so that pair only has 7 usable sample rows (B-H). Every later column
+    # pair has a completely empty row A available for real samples, so those
+    # pairs should read all 8 rows (A-H), not skip row A too.
     sample_col_pairs = [(3, 4), (5, 6), (7, 8), (9, 10)]
     results = []
     sample_index = 0
@@ -367,11 +370,13 @@ def run_analysis(
 
     target_ug = loading_protein if target_ug_override is None else float(target_ug_override)
 
-    for c1, c2 in sample_col_pairs:
+    for pair_idx, (c1, c2) in enumerate(sample_col_pairs):
         if names_provided and sample_index >= len(sample_names_override):
             break
         if df.shape[1] <= max(c1, c2):
             continue
+
+        sample_start = base + 1 if pair_idx == 0 else base
         sample_data = df.iloc[sample_start: sample_start + 8, [c1, c2]].dropna(how='all')
         if sample_data.empty:
             continue
@@ -593,8 +598,13 @@ def build_plate_map_html() -> str:
     labels[('A', 4)] = 'Standard 9'
 
     sample_num = 1
-    for c1, c2 in [(3, 4), (5, 6), (7, 8), (9, 10)]:
-        for r in rows[1:]:
+    sample_col_pairs = [(3, 4), (5, 6), (7, 8), (9, 10)]
+    for pair_idx, (c1, c2) in enumerate(sample_col_pairs):
+        # Row A of the first pair is occupied by Standard 9, so that pair
+        # only has rows B-H available. Every later pair has a free row A,
+        # so those pairs use all 8 rows (A-H).
+        row_list = rows[1:] if pair_idx == 0 else rows
+        for r in row_list:
             labels[(r, c1)] = f'Sample {sample_num}'
             labels[(r, c2)] = f'Sample {sample_num}'
             sample_num += 1
@@ -650,8 +660,11 @@ with st.expander('Show example plate layout (click to expand)'):
         "standard at A3/A4 -- shaded darkest-to-white to mirror how a real "
         "absorbance heatmap looks, with Standard 9 being the lowest/blank. "
         "Once the standards are used up, sample loading starts right after -- "
-        "**B3/B4 is Sample 1** -- and continues down and then across the "
-        "remaining column pairs."
+        "**B3/B4 is Sample 1**. Row A of columns 3-4 is taken by Standard 9, "
+        "so that first sample column-pair only has 7 rows (B-H) -- but every "
+        "column-pair after that has a free row A, so those use all 8 rows "
+        "(A-H). That gives 7 + 8 + 8 + 8 = **31 samples total** across the "
+        "plate."
     )
     st.markdown(build_plate_map_html(), unsafe_allow_html=True)
 
