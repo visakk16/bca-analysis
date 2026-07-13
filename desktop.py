@@ -152,7 +152,7 @@ if __name__ == "__main__":
 
         try:
             webview.create_window("BCA Plate Analysis", URL, width=1400, height=900)
-            webview.start()
+            webview.start(gui='edgechromium')
         except Exception as e:
             # Most likely cause: the Microsoft Edge WebView2 runtime isn't
             # installed/available on this machine. Fall back to opening the
