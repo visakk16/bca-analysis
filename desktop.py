@@ -1,15 +1,9 @@
-import threading
-import webview
 import subprocess
 import time
 import sys
 import os
 import webbrowser
 import urllib.request
-import tempfile
-
-if sys.platform == "win32":
-    import winreg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(HERE, "bca_app.py")
@@ -18,51 +12,12 @@ STREAMLIT_SERVER_FLAG = "--run-streamlit-server"
 PORT = 8501
 URL = f"http://localhost:{PORT}"
 
-WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-
 
 def resource_path(relative_path):
     # When PyInstaller freezes this into an exe, bundled files are extracted
     # to sys._MEIPASS at runtime instead of living next to this script.
     base_path = getattr(sys, "_MEIPASS", HERE)
     return os.path.join(base_path, relative_path)
-
-
-def is_webview2_installed():
-    """Checks the registry for an existing WebView2 Runtime install
-    (checks both the per-machine and per-user registry locations)."""
-    reg_paths = [
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-    ]
-    for hive, path in reg_paths:
-        try:
-            with winreg.OpenKey(hive, path):
-                return True
-        except FileNotFoundError:
-            continue
-    return False
-
-
-def install_webview2_runtime():
-    """Downloads and silently installs the WebView2 Runtime. Returns True on
-    apparent success, False if anything goes wrong (caller should fall back
-    to opening in a browser instead)."""
-    try:
-        installer_path = os.path.join(tempfile.gettempdir(), "MicrosoftEdgeWebview2Setup.exe")
-        print("[desktop] Downloading WebView2 Runtime installer...")
-        urllib.request.urlretrieve(WEBVIEW2_BOOTSTRAPPER_URL, installer_path)
-
-        print("[desktop] Installing WebView2 Runtime (this may prompt for admin permission)...")
-        result = subprocess.run(
-            [installer_path, "/silent", "/install"],
-            timeout=120,
-        )
-        return result.returncode == 0
-    except Exception as e:
-        print(f"[desktop] WebView2 Runtime install failed: {e}")
-        return False
 
 
 def run_streamlit_server_in_this_process():
@@ -130,9 +85,9 @@ if __name__ == "__main__":
     else:
         proc = launch_streamlit_subprocess()
         time.sleep(2)
-        
+
         print("Process return code:", proc.poll())
-        
+
         if proc.poll() is not None:
             stdout, stderr = proc.communicate()
             print("STDOUT:")
@@ -141,29 +96,17 @@ if __name__ == "__main__":
             print(stderr)
             print("Streamlit process exited immediately.")
             sys.exit(1)
-        
+
         if not wait_for_server():
             print("Server never started.")
             sys.exit(1)
 
-        if sys.platform == "win32" and not is_webview2_installed():
-            print("[desktop] WebView2 Runtime not detected -- attempting to install it.")
-            install_webview2_runtime()
-
+        print(f"[desktop] Opening {URL} in your default browser.")
+        webbrowser.open(URL)
+        print("[desktop] Close this window to stop the app.")
         try:
-            webview.create_window("BCA Plate Analysis", URL, width=1400, height=900)
-            webview.start(gui='edgechromium')
-        except Exception as e:
-            # Most likely cause: the Microsoft Edge WebView2 runtime isn't
-            # installed/available on this machine. Fall back to opening the
-            # app in the user's default browser instead of just crashing.
-            print(f"[desktop] Could not open the native app window: {e}")
-            print(f"[desktop] Opening {URL} in your default browser instead.")
-            webbrowser.open(URL)
-            print("[desktop] Close this window to stop the app.")
-            try:
-                proc.wait()
-            except KeyboardInterrupt:
-                pass
+            proc.wait()
+        except KeyboardInterrupt:
+            pass
         finally:
             proc.terminate()
