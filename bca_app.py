@@ -576,16 +576,21 @@ def build_plate_map_html() -> str:
     pairs belong together. This mirrors the app's real parsing logic (rows
     A-H, columns 1-10) -- it isn't just illustrative, it's the actual layout
     the code expects.
+
+    Standards are shaded on a blue gradient (Standard 1 = darkest/highest
+    concentration, Standard 9 = white/lowest -- mirroring how a real
+    absorbance heatmap looks). Samples are plain white cells with black text.
     """
     rows = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
     num_cols = 10
+    num_standards = 9
 
     labels = {}
     for i, r in enumerate(rows):
-        labels[(r, 1)] = f'Std {i + 1}'
-        labels[(r, 2)] = f'Std {i + 1}'
-    labels[('A', 3)] = 'Std 9'
-    labels[('A', 4)] = 'Std 9'
+        labels[(r, 1)] = f'Standard {i + 1}'
+        labels[(r, 2)] = f'Standard {i + 1}'
+    labels[('A', 3)] = 'Standard 9'
+    labels[('A', 4)] = 'Standard 9'
 
     sample_num = 1
     for c1, c2 in [(3, 4), (5, 6), (7, 8), (9, 10)]:
@@ -594,15 +599,16 @@ def build_plate_map_html() -> str:
             labels[(r, c2)] = f'Sample {sample_num}'
             sample_num += 1
 
-    # Give every unique label a stable pastel color so a duplicate pair
-    # (e.g. B3 and B4) always shares the same shading -- that's the whole
-    # point of the illustration.
-    palette = [
-        '#FFD6D6', '#FFE8C2', '#FFF6B3', '#DFF7C2', '#C2F0E0',
-        '#C2E3F7', '#D6C2F7', '#F7C2E8', '#E0E0E0', '#C2F0C2',
-    ]
-    unique_labels = sorted(set(labels.values()), key=lambda s: (s.split()[0], int(s.split()[1])))
-    color_for_label = {lbl: palette[i % len(palette)] for i, lbl in enumerate(unique_labels)}
+    def blue_shade(standard_num: int) -> str:
+        """Standard 1 -> darkest blue, Standard 9 -> white. Linear
+        interpolation between a dark blue and white across the 9 standards."""
+        dark = (31, 95, 168)   # a strong blue
+        light = (255, 255, 255)  # white
+        t = (standard_num - 1) / (num_standards - 1)  # 0.0 .. 1.0
+        r = round(dark[0] + t * (light[0] - dark[0]))
+        g = round(dark[1] + t * (light[1] - dark[1]))
+        b = round(dark[2] + t * (light[2] - dark[2]))
+        return f'rgb({r},{g},{b})'
 
     header_cells = ''.join(f'<th style="padding:6px 10px;">{c}</th>' for c in range(1, num_cols + 1))
     body_rows = ''
@@ -610,9 +616,13 @@ def build_plate_map_html() -> str:
         row_cells = f'<th style="padding:6px 10px;">{r}</th>'
         for c in range(1, num_cols + 1):
             label = labels.get((r, c), '')
-            color = color_for_label.get(label, '#F5F5F5')
+            if label.startswith('Standard'):
+                standard_num = int(label.split()[1])
+                color = blue_shade(standard_num)
+            else:
+                color = '#FFFFFF'
             row_cells += (
-                f'<td style="padding:6px 10px; text-align:center; '
+                f'<td style="padding:6px 10px; text-align:center; color:#000000; '
                 f'background:{color}; border:1px solid #999; font-size:12px;">{label}</td>'
             )
         body_rows += f'<tr>{row_cells}</tr>'
@@ -634,12 +644,14 @@ st.write('Upload an absorbance Excel file (.xlsx).')
 with st.expander('Show example plate layout (click to expand)'):
     st.markdown(
         "This app reads plate wells in **duplicate pairs** -- each pair shares "
-        "one absorbance value. Standards fill columns 1-2 (rows A-H, one "
-        "standard per row) plus a 9th standard at A3/A4. Once the standards "
-        "are used up, sample loading starts right after -- **B3/B4 is Sample "
-        "1**, and it continues down and then across the remaining column "
-        "pairs. Wells with the same color/label below are the duplicate pair "
-        "for that standard or sample."
+        "one absorbance value (matching labels below mark a pair, e.g. B3/B4). "
+        "Standards fill columns 1-2 (rows A-H, one standard per row, highest "
+        "concentration at Standard 1 down to lowest at Standard 8) plus a 9th "
+        "standard at A3/A4 -- shaded darkest-to-white to mirror how a real "
+        "absorbance heatmap looks, with Standard 9 being the lowest/blank. "
+        "Once the standards are used up, sample loading starts right after -- "
+        "**B3/B4 is Sample 1** -- and continues down and then across the "
+        "remaining column pairs."
     )
     st.markdown(build_plate_map_html(), unsafe_allow_html=True)
 
